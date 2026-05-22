@@ -4,8 +4,13 @@
   "ring": {
     "refreshToken": ""
   },
+  "ecobee": {
+    "apiKey": "YOUR_ECOBEE_APP_API_KEY",
+    "accessToken": "",
+    "refreshToken": ""
+  },
   "cameras": [
     { "name": "Front Door", "index": 0 },
-    { "name": "Backyard", "index": 1 }
+    { "name": "Backyard",   "index": 1 }
   ]
 }

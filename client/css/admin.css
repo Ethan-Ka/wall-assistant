@@ -1,0 +1,270 @@
+:root {
+  --bg:         #121212;
+  --surface:    #1e1e1e;
+  --surface2:   #282828;
+  --accent:     #1db954;
+  --text:       #ffffff;
+  --text-muted: #b3b3b3;
+  --radius:     12px;
+  --border:     #333;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  font-size: 14px;
+}
+
+/* ── Header ── */
+
+.admin-header {
+  padding: 14px 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.admin-header h1 {
+  font-size: 1rem;
+  font-weight: 600;
+  flex: 1;
+  min-width: 160px;
+}
+
+.admin-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.control-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.control-group label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.control-group input[type="number"] {
+  width: 52px;
+  padding: 5px 8px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+.btn {
+  padding: 7px 16px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.btn-primary   { background: var(--accent); color: #000; }
+.btn-secondary { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+.btn-danger    { background: transparent; color: #e05c5c; border: 1px solid #e05c5c; }
+
+/* ── Body layout ── */
+
+.admin-body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.admin-left {
+  flex: 1;
+  padding: 32px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  overflow: auto;
+}
+
+.admin-right {
+  width: 260px;
+  flex-shrink: 0;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.admin-hint {
+  font-size: 0.75rem;
+  color: #555;
+  letter-spacing: 0.02em;
+}
+
+/* ── Grid editor ── */
+
+.grid-editor-wrap {
+  width: 100%;
+  max-width: 600px;
+  aspect-ratio: 16 / 10;
+}
+
+.grid-editor {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  gap: 8px;
+}
+
+/* ── Admin cell ── */
+
+.admin-cell {
+  border-radius: 10px;
+  border: 2px dashed #2e2e2e;
+  background: var(--surface2);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  cursor: pointer;
+  position: relative;
+  transition: border-color 0.12s, background 0.12s;
+  user-select: none;
+  padding: 8px;
+}
+
+.admin-cell.has-widget {
+  border-style: solid;
+  border-color: #3a3a3a;
+  background: #1e1e1e;
+}
+
+.admin-cell.has-widget[draggable="true"] { cursor: grab; }
+.admin-cell.has-widget[draggable="true"]:active { cursor: grabbing; }
+
+.admin-cell.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(29, 185, 84, 0.2);
+}
+
+.admin-cell.drag-over {
+  border-color: #888;
+  background: #2a2a2a;
+}
+
+.cell-icon {
+  font-size: 1.6rem;
+  line-height: 1;
+}
+
+.cell-type {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.cell-name {
+  font-size: 0.7rem;
+  color: var(--text);
+  text-align: center;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty-cell-label {
+  font-size: 0.65rem;
+  color: #3a3a3a;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* ── Config panel ── */
+
+.admin-right h2 {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin-bottom: 16px;
+}
+
+.config-placeholder {
+  color: #444;
+  font-size: 0.85rem;
+  text-align: center;
+  padding: 32px 0;
+  line-height: 1.5;
+}
+
+.form-group {
+  margin-bottom: 14px;
+}
+
+.form-group label {
+  display: block;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 5px;
+}
+
+.form-group input,
+.form-group select {
+  width: 100%;
+  padding: 7px 10px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 0.9rem;
+  outline: none;
+}
+
+.form-group input:focus,
+.form-group select:focus {
+  border-color: var(--accent);
+}
+
+/* ── Notification toast ── */
+
+.notification {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  padding: 10px 18px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  opacity: 0;
+  transition: opacity 0.2s;
+  pointer-events: none;
+  z-index: 200;
+}
+
+.notification.success { background: var(--accent); color: #000; }
+.notification.error   { background: #c0392b; color: #fff; }
+.notification.visible { opacity: 1; }

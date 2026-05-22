@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="css/admin.css">
+  <title>Layout Editor — Wall Assistant</title>
+</head>
+<body>
+  <header class="admin-header">
+    <h1>Wall Assistant &mdash; Layout Editor</h1>
+    <div class="admin-controls">
+      <div class="control-group">
+        <label for="cols-input">Cols</label>
+        <input type="number" id="cols-input" min="1" max="6" value="2">
+      </div>
+      <div class="control-group">
+        <label for="rows-input">Rows</label>
+        <input type="number" id="rows-input" min="1" max="6" value="2">
+      </div>
+      <button class="btn btn-secondary" id="reset-btn">Reset</button>
+      <button class="btn btn-primary" id="save-btn">Save Layout</button>
+    </div>
+  </header>
+
+  <div class="admin-body">
+    <div class="admin-left">
+      <div class="grid-editor-wrap">
+        <div class="grid-editor" id="grid-editor"></div>
+      </div>
+      <p class="admin-hint">Drag cells to swap positions &bull; Click a cell to configure it</p>
+    </div>
+    <aside class="admin-right">
+      <h2>Cell Configuration</h2>
+      <div id="config-content">
+        <div class="config-placeholder">Click a cell to configure it</div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="notification" id="notification" aria-live="polite"></div>
+
+  <script src="js/admin.js"></script>
+</body>
+</html>
