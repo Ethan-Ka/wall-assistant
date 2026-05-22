@@ -7,7 +7,20 @@ const ROOT = path.join(__dirname, '..');
 const CHECK_INTERVAL_MS = 10 * 60 * 1000;
 
 function git(...args) {
-  return execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' }).trim();
+  return execFileSync('git', args, {
+    cwd: ROOT,
+    encoding: 'utf8',
+    shell: process.platform === 'win32',
+  }).trim();
+}
+
+function isGitRepo() {
+  try {
+    git('rev-parse', '--git-dir');
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function currentCommit() {
@@ -59,6 +72,10 @@ function checkForUpdates() {
 }
 
 function start() {
+  if (!isGitRepo()) {
+    console.log('[auto-update] not a git repository, skipping auto-update');
+    return;
+  }
   setTimeout(() => {
     checkForUpdates();
     setInterval(checkForUpdates, CHECK_INTERVAL_MS);

@@ -2,6 +2,7 @@
 
 const util = require('util');
 const readline = require('readline');
+const os = require('os');
 require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
 
 const http = require('http');
@@ -76,6 +77,16 @@ const { getNowPlaying } = require('./spotify');
 const { readLayout, writeLayout } = require('./layout');
 const autoUpdate = require('./auto-update');
 
+function getLocalIp() {
+  const ifaces = os.networkInterfaces();
+  for (const name of Object.keys(ifaces)) {
+    for (const iface of ifaces[name]) {
+      if (iface.family === 'IPv4' && !iface.internal) return iface.address;
+    }
+  }
+  return null;
+}
+
 function color(code, text) {
   return isDashboardEnabled ? `\u001b[${code}m${text}\u001b[0m` : text;
 }
@@ -105,7 +116,9 @@ function getDisplayLines() {
 
   const lines = [];
   lines.push(color('1;36', 'wall-assistant server'));
-  lines.push(`http://localhost:${PORT}  |  uptime ${uptimeSeconds}s  |  ws clients ${wsCount}`);
+  const localIp = getLocalIp();
+  const urlPart = localIp ? `http://localhost:${PORT}  |  http://${localIp}:${PORT}` : `http://localhost:${PORT}`;
+  lines.push(`${urlPart}  |  uptime ${uptimeSeconds}s  |  ws clients ${wsCount}`);
   lines.push(`ring ${dashboardState.ringReady ? 'ready' : 'starting'}  |  ecobee ${dashboardState.ecobeeReady ? 'ready' : 'starting'}  |  hls on-demand`);
   lines.push(`layout ${layout.slots.length} slots (${layout.grid.cols}x${layout.grid.rows})  |  last payload ${lastPayload}  |  last client event ${lastEvent}`);
   if (dashboardState.lastPayloadError) {
