@@ -2,7 +2,7 @@
 
 (function () {
   var DEFAULT_LAYOUT = {
-    grid: { cols: 2, rows: 2 },
+    grid: { cols: 2, rows: 2, colSizes: [1, 1], rowSizes: [1, 1] },
     slots: [
       { id: 'camera-0', type: 'camera',      row: 1, col: 1, rowSpan: 1, colSpan: 1, config: { name: 'Front Door', index: 0 } },
       { id: 'camera-1', type: 'camera',      row: 1, col: 2, rowSpan: 1, colSpan: 1, config: { name: 'Backyard',   index: 1 } },
@@ -11,16 +11,99 @@
     ],
   };
 
-  var WIDGET_ICONS  = { camera: '📹', temperature: '🌡️', clock: '🕐', stocks: '📈', news: '📰' };
-  var WIDGET_LABELS = { camera: 'Camera', temperature: 'Temperature', clock: 'Clock', stocks: 'Markets', news: 'Headlines' };
+  // ── Widget metadata ───────────────────────────────────
+
+  var WIDGET_ICONS = {
+    camera: '📹', temperature: '🌡️', clock: '🕐', stocks: '📈',
+    news: '📰', iss: '🛰️', sports: '🏟️', nowplaying: '🎵',
+  };
+
+  var WIDGET_LABELS = {
+    camera: 'Camera', temperature: 'Temperature', clock: 'Clock',
+    stocks: 'Markets', news: 'Headlines', iss: 'ISS Tracker',
+    sports: 'Sports', nowplaying: 'Now Playing',
+  };
+
+  var WIDGET_TYPES = [
+    ['camera',      'Camera'],
+    ['temperature', 'Temperature'],
+    ['clock',       'Clock'],
+    ['stocks',      'Markets'],
+    ['news',        'Headlines'],
+    ['iss',         'ISS Tracker'],
+    ['sports',      'Sports'],
+    ['nowplaying',  'Now Playing'],
+    ['empty',       'Empty (remove)'],
+  ];
+
+  // ── Config schemas ────────────────────────────────────
+  // Each field: { key, label, type ('text'|'number'|'select'), def, min?, max?, options? }
+
+  var ringCameras = []; // populated from /api/cameras on load
+
+  var CONFIG_SCHEMAS = {
+    camera: [
+      { key: 'name',  label: 'Camera Name',  type: 'text', def: 'Camera' },
+      { key: 'index', label: 'Camera',       type: 'camera-select', def: 0 },
+    ],
+    temperature: [
+      { key: 'units', label: 'Units', type: 'select', def: 'fahrenheit',
+        options: [['fahrenheit', 'Fahrenheit (°F)'], ['celsius', 'Celsius (°C)']] },
+    ],
+    clock: [
+      { key: 'format', label: 'Time Format', type: 'select', def: '24h',
+        options: [['24h', '24-hour'], ['12h', '12-hour']] },
+      { key: 'showSeconds', label: 'Show Seconds', type: 'select', def: 'false',
+        options: [['false', 'No'], ['true', 'Yes']] },
+    ],
+    stocks: [
+      { key: 'symbols', label: 'Stocks to show', type: 'stock-multi', def: 'AAPL,NVDA,JPM,^DJI,^SPX' },
+      { key: 'title',   label: 'Widget Title',              type: 'text', def: 'Markets' },
+    ],
+    news: [
+      { key: 'feedUrl', label: 'RSS Feed URL',  type: 'text', def: 'https://feeds.bbci.co.uk/news/rss.xml' },
+      { key: 'title',   label: 'Widget Title',  type: 'text', def: 'Top Headlines' },
+    ],
+    iss: [
+      { key: 'radius',      label: 'Overhead Radius (miles)', type: 'number', def: 100, min: 10, max: 500 },
+      { key: 'showFlights', label: 'Show Nearby Flights', type: 'select', def: 'true',
+        options: [['true', 'Yes'], ['false', 'No']] },
+    ],
+    sports: [
+      { key: 'sport',  label: 'Sport', type: 'select', def: 'football',
+        options: [['football','Football'],['basketball','Basketball'],['baseball','Baseball'],
+                  ['hockey','Hockey'],['soccer','Soccer']] },
+      { key: 'league', label: 'League (e.g. nfl, nba, mlb)', type: 'text',   def: 'nfl' },
+      { key: 'team',   label: 'Team Code (e.g. SF, LAL)',     type: 'text',   def: '' },
+    ],
+    nowplaying: [],
+  };
+
+  var STOCK_CHOICES = [
+    { value: 'AAPL', label: 'AAPL' },
+    { value: 'NVDA', label: 'NVDA' },
+    { value: 'JPM', label: 'JPM' },
+    { value: '^DJI', label: 'Dow Jones (^DJI)' },
+    { value: '^SPX', label: 'S&P 500 (^SPX)' },
+    { value: '^IXIC', label: 'NASDAQ (^IXIC)' },
+    { value: 'MSFT', label: 'MSFT' },
+    { value: 'TSLA', label: 'TSLA' },
+  ];
+
+  function defaultConfig(type) {
+    var schema = CONFIG_SCHEMAS[type] || [];
+    var cfg = {};
+    schema.forEach(function (f) { cfg[f.key] = f.def; });
+    return cfg;
+  }
+
+  // ── State ─────────────────────────────────────────────
 
   var layout       = null;
   var selectedCell = null; // { row, col }
   var dragSlotId   = null;
 
-  function clearEl(node) {
-    while (node.firstChild) node.removeChild(node.firstChild);
-  }
+  function clearEl(node) { while (node.firstChild) node.removeChild(node.firstChild); }
 
   // ── Load / save ───────────────────────────────────────
 
@@ -29,6 +112,9 @@
       .then(function (r) { return r.json(); })
       .then(function (data) {
         layout = data;
+        // Ensure grid has colSizes/rowSizes
+        if (!layout.grid.colSizes) layout.grid.colSizes = Array(layout.grid.cols).fill(1);
+        if (!layout.grid.rowSizes) layout.grid.rowSizes = Array(layout.grid.rows).fill(1);
         syncControls();
         renderGrid();
         renderConfigPanel();
@@ -51,9 +137,7 @@
         if (!r.ok) throw new Error('server error');
         showNotification('Layout saved', 'success');
       })
-      .catch(function () {
-        showNotification('Save failed', 'error');
-      });
+      .catch(function () { showNotification('Save failed', 'error'); });
   }
 
   function resetLayout() {
@@ -67,22 +151,48 @@
 
   // ── Header controls ───────────────────────────────────
 
+  function parseSizes(str, count) {
+    var parts = (str || '').split(',').map(function (v) { return Math.max(0.1, parseFloat(v.trim()) || 1); });
+    while (parts.length < count) parts.push(1);
+    return parts.slice(0, count);
+  }
+
   function syncControls() {
     document.getElementById('cols-input').value = layout.grid.cols;
     document.getElementById('rows-input').value = layout.grid.rows;
+    document.getElementById('col-sizes-input').value = (layout.grid.colSizes || []).join(', ');
+    document.getElementById('row-sizes-input').value = (layout.grid.rowSizes || []).join(', ');
   }
 
   function onGridSizeChange() {
     var cols = clamp(parseInt(document.getElementById('cols-input').value, 10), 1, 6);
     var rows = clamp(parseInt(document.getElementById('rows-input').value, 10), 1, 6);
+
+    var colSizes = (layout.grid.colSizes || []).slice();
+    var rowSizes = (layout.grid.rowSizes || []).slice();
+    while (colSizes.length < cols) colSizes.push(1);
+    while (rowSizes.length < rows) rowSizes.push(1);
+    colSizes = colSizes.slice(0, cols);
+    rowSizes = rowSizes.slice(0, rows);
+
     layout.slots = layout.slots.filter(function (s) { return s.col <= cols && s.row <= rows; });
-    layout.grid.cols = cols;
-    layout.grid.rows = rows;
-    if (selectedCell && (selectedCell.row > rows || selectedCell.col > cols)) {
-      selectedCell = null;
-    }
+    layout.grid.cols     = cols;
+    layout.grid.rows     = rows;
+    layout.grid.colSizes = colSizes;
+    layout.grid.rowSizes = rowSizes;
+
+    if (selectedCell && (selectedCell.row > rows || selectedCell.col > cols)) selectedCell = null;
+    syncControls();
     renderGrid();
     renderConfigPanel();
+  }
+
+  function onSizesChange() {
+    var cols = layout.grid.cols;
+    var rows = layout.grid.rows;
+    layout.grid.colSizes = parseSizes(document.getElementById('col-sizes-input').value, cols);
+    layout.grid.rowSizes = parseSizes(document.getElementById('row-sizes-input').value, rows);
+    renderGrid();
   }
 
   function clamp(n, lo, hi) {
@@ -95,14 +205,34 @@
     return layout.slots.find(function (s) { return s.row === row && s.col === col; }) || null;
   }
 
+  // Returns a set of "row,col" keys for cells covered by a span but not the anchor
+  function buildClaimedSet() {
+    var claimed = {};
+    layout.slots.forEach(function (s) {
+      var cs = s.colSpan || 1;
+      var rs = s.rowSpan || 1;
+      for (var dr = 0; dr < rs; dr++) {
+        for (var dc = 0; dc < cs; dc++) {
+          if (dr === 0 && dc === 0) continue;
+          claimed[(s.row + dr) + ',' + (s.col + dc)] = true;
+        }
+      }
+    });
+    return claimed;
+  }
+
   function renderGrid() {
     var container = document.getElementById('grid-editor');
-    container.style.gridTemplateColumns = 'repeat(' + layout.grid.cols + ', 1fr)';
-    container.style.gridTemplateRows    = 'repeat(' + layout.grid.rows + ', 1fr)';
+    var colSizes  = layout.grid.colSizes || Array(layout.grid.cols).fill(1);
+    var rowSizes  = layout.grid.rowSizes || Array(layout.grid.rows).fill(1);
+    container.style.gridTemplateColumns = colSizes.map(function (v) { return v + 'fr'; }).join(' ');
+    container.style.gridTemplateRows    = rowSizes.map(function (v) { return v + 'fr'; }).join(' ');
     clearEl(container);
 
+    var claimed = buildClaimedSet();
     for (var r = 1; r <= layout.grid.rows; r++) {
       for (var c = 1; c <= layout.grid.cols; c++) {
+        if (claimed[r + ',' + c]) continue; // cell is covered by a neighboring span
         container.appendChild(buildCell(r, c, slotAt(r, c)));
       }
     }
@@ -114,14 +244,23 @@
     cell.dataset.row = row;
     cell.dataset.col = col;
 
+    var cs = slot ? (slot.colSpan || 1) : 1;
+    var rs = slot ? (slot.rowSpan || 1) : 1;
+    // Explicit placement is required because we skip covered cells from the DOM
+    cell.style.gridColumn = col + ' / span ' + cs;
+    cell.style.gridRow    = row + ' / span ' + rs;
+
     if (selectedCell && selectedCell.row === row && selectedCell.col === col) {
       cell.classList.add('selected');
     }
 
     if (slot) {
       cell.classList.add('has-widget');
-      cell.setAttribute('draggable', 'true');
-      cell.dataset.slotId = slot.id;
+      var isSpanned = cs > 1 || rs > 1;
+      if (!isSpanned) {
+        cell.setAttribute('draggable', 'true');
+        cell.addEventListener('dragstart', onDragStart);
+      }
 
       var icon = document.createElement('div');
       icon.className = 'cell-icon';
@@ -134,14 +273,19 @@
       cell.appendChild(icon);
       cell.appendChild(typeLabel);
 
-      if (slot.type === 'camera' && slot.config && slot.config.name) {
+      if (slot.config && slot.config.name) {
         var nameDiv = document.createElement('div');
         nameDiv.className = 'cell-name';
         nameDiv.textContent = slot.config.name;
         cell.appendChild(nameDiv);
       }
 
-      cell.addEventListener('dragstart', onDragStart);
+      if (cs > 1 || rs > 1) {
+        var spanBadge = document.createElement('div');
+        spanBadge.className = 'cell-span-badge';
+        spanBadge.textContent = cs + '×' + rs;
+        cell.appendChild(spanBadge);
+      }
     } else {
       cell.classList.add('empty');
       var emptyLbl = document.createElement('div');
@@ -162,7 +306,10 @@
   // ── Drag-and-drop ─────────────────────────────────────
 
   function onDragStart(evt) {
-    dragSlotId = evt.currentTarget.dataset.slotId;
+    var r = parseInt(evt.currentTarget.dataset.row, 10);
+    var c = parseInt(evt.currentTarget.dataset.col, 10);
+    var s = slotAt(r, c);
+    dragSlotId = s ? s.id : null;
     evt.dataTransfer.effectAllowed = 'move';
   }
 
@@ -179,11 +326,14 @@
     var slotA = layout.slots.find(function (s) { return s.id === dragSlotId; });
     var slotB = slotAt(targetRow, targetCol);
     if (!slotA || (slotA.row === targetRow && slotA.col === targetCol)) return;
+    // Don't swap spanned slots — position math is complex with different span sizes
+    if ((slotA.colSpan || 1) > 1 || (slotA.rowSpan || 1) > 1) return;
+    if (slotB && ((slotB.colSpan || 1) > 1 || (slotB.rowSpan || 1) > 1)) return;
 
     var oldRow = slotA.row;
     var oldCol = slotA.col;
-    slotA.row  = targetRow;
-    slotA.col  = targetCol;
+    slotA.row = targetRow;
+    slotA.col = targetCol;
     if (slotB) { slotB.row = oldRow; slotB.col = oldCol; }
 
     if (selectedCell && selectedCell.row === oldRow && selectedCell.col === oldCol) {
@@ -202,6 +352,119 @@
     renderConfigPanel();
   }
 
+  function makeFormGroup(labelText, inputFactory) {
+    var group = document.createElement('div');
+    group.className = 'form-group';
+    var lbl = document.createElement('label');
+    lbl.textContent = labelText;
+    var input = inputFactory();
+    group.appendChild(lbl);
+    group.appendChild(input);
+    return group;
+  }
+
+  function makeSchemaField(f, currentVal) {
+    return makeFormGroup(f.label, function () {
+      if (f.type === 'stock-multi') {
+        var wrapper = document.createElement('div');
+        wrapper.id = 'cfg-field-' + f.key;
+        wrapper.className = 'checkbox-group';
+
+        var rawValue = currentVal !== undefined ? String(currentVal) : f.def;
+        var allValues = rawValue.split(',').map(function (v) { return v.trim(); }).filter(Boolean);
+        var selectedValues = [];
+        var customValues = [];
+
+        if (allValues.length === 0) {
+          allValues = String(f.def).split(',').map(function (v) { return v.trim(); }).filter(Boolean);
+        }
+
+        allValues.forEach(function (value) {
+          if (STOCK_CHOICES.some(function (choice) { return choice.value === value; })) selectedValues.push(value);
+          else customValues.push(value);
+        });
+
+        STOCK_CHOICES.forEach(function (choice) {
+          var label = document.createElement('label');
+          label.className = 'checkbox-item';
+
+          var input = document.createElement('input');
+          input.type = 'checkbox';
+          input.value = choice.value;
+          input.checked = selectedValues.indexOf(choice.value) !== -1;
+
+          var text = document.createElement('span');
+          text.textContent = choice.label;
+
+          label.appendChild(input);
+          label.appendChild(text);
+          wrapper.appendChild(label);
+        });
+
+        var customLabel = document.createElement('label');
+        customLabel.className = 'checkbox-custom-label';
+        customLabel.textContent = 'Custom tickers';
+
+        var customInput = document.createElement('input');
+        customInput.type = 'text';
+        customInput.id = 'cfg-field-' + f.key + '-custom';
+        customInput.placeholder = 'e.g. AMD, META, ^VIX';
+        customInput.value = customValues.join(', ');
+
+        wrapper.appendChild(customLabel);
+        wrapper.appendChild(customInput);
+
+        return wrapper;
+      }
+      if (f.type === 'select') {
+        var sel = document.createElement('select');
+        sel.id = 'cfg-field-' + f.key;
+        var valStr = String(currentVal !== undefined ? currentVal : f.def);
+        f.options.forEach(function (opt) {
+          var o = document.createElement('option');
+          o.value = opt[0];
+          o.textContent = opt[1];
+          if (opt[0] === valStr) o.selected = true;
+          sel.appendChild(o);
+        });
+        return sel;
+      }
+      if (f.type === 'camera-select') {
+        var sel = document.createElement('select');
+        sel.id = 'cfg-field-' + f.key;
+        var currentIndex = currentVal !== undefined ? Number(currentVal) : f.def;
+        if (ringCameras.length === 0) {
+          var o = document.createElement('option');
+          o.value = currentIndex;
+          o.textContent = 'Camera ' + currentIndex + ' (not connected)';
+          sel.appendChild(o);
+        } else {
+          ringCameras.forEach(function (cam) {
+            var o = document.createElement('option');
+            o.value = cam.index;
+            o.textContent = cam.name + ' (' + cam.kind + ')';
+            if (cam.index === currentIndex) o.selected = true;
+            sel.appendChild(o);
+          });
+        }
+        sel.addEventListener('change', function () {
+          var selectedIndex = parseInt(this.value, 10);
+          var chosen = ringCameras.find(function (c) { return c.index === selectedIndex; });
+          var nameEl = document.getElementById('cfg-field-name');
+          if (chosen && nameEl) nameEl.value = chosen.name;
+        });
+        return sel;
+      }
+      var inp = document.createElement('input');
+      inp.type = f.type === 'number' ? 'number' : 'text';
+      inp.id   = 'cfg-field-' + f.key;
+      if (f.min != null) inp.min = String(f.min);
+      if (f.max != null) inp.max = String(f.max);
+      inp.value = currentVal !== undefined ? currentVal : f.def;
+      return inp;
+    });
+  }
+
   function renderConfigPanel() {
     var panel = document.getElementById('config-content');
     clearEl(panel);
@@ -218,11 +481,11 @@
     var currentType = slot ? slot.type : 'empty';
     var cfg = (slot && slot.config) || {};
 
-    // Type selector
+    // ── Widget type selector ──────────────────────────
     panel.appendChild(makeFormGroup('Widget Type', function () {
       var sel = document.createElement('select');
       sel.id = 'cfg-type';
-      [['camera', 'Camera'], ['temperature', 'Temperature'], ['clock', 'Clock'], ['stocks', 'Markets'], ['news', 'Headlines'], ['empty', 'Empty (remove)']].forEach(function (pair) {
+      WIDGET_TYPES.forEach(function (pair) {
         var o = document.createElement('option');
         o.value = pair[0];
         o.textContent = pair[1];
@@ -233,53 +496,48 @@
       return sel;
     }));
 
-    // Camera-specific fields
-    if (currentType === 'camera') {
-      panel.appendChild(makeFormGroup('Camera Name', function () {
-        var inp = document.createElement('input');
-        inp.type = 'text';
-        inp.id = 'cfg-cam-name';
-        inp.value = cfg.name || '';
-        return inp;
-      }));
-      panel.appendChild(makeFormGroup('Ring Camera Index', function () {
-        var inp = document.createElement('input');
-        inp.type = 'number';
-        inp.id = 'cfg-cam-index';
-        inp.min = '0';
-        inp.value = cfg.index != null ? cfg.index : 0;
-        return inp;
-      }));
-    }
+    if (!slot) return;
 
-    if (slot) {
-      var applyBtn = document.createElement('button');
-      applyBtn.className = 'btn btn-primary';
-      applyBtn.style.cssText = 'width:100%;margin-top:8px';
-      applyBtn.textContent = 'Apply Changes';
-      applyBtn.addEventListener('click', applyConfig);
-      panel.appendChild(applyBtn);
+    // ── Span controls (all widget types) ─────────────
+    var maxCols = layout.grid.cols - selectedCell.col + 1;
+    var maxRows = layout.grid.rows - selectedCell.row + 1;
 
-      var removeBtn = document.createElement('button');
-      removeBtn.className = 'btn btn-danger';
-      removeBtn.style.cssText = 'width:100%;margin-top:8px';
-      removeBtn.textContent = 'Remove Widget';
-      removeBtn.addEventListener('click', function () {
-        removeSlot(selectedCell.row, selectedCell.col);
-      });
-      panel.appendChild(removeBtn);
-    }
-  }
+    panel.appendChild(makeFormGroup('Width (cols)', function () {
+      var inp = document.createElement('input');
+      inp.type  = 'number'; inp.id = 'cfg-colspan';
+      inp.min   = '1'; inp.max = String(maxCols);
+      inp.value = slot.colSpan || 1;
+      return inp;
+    }));
 
-  function makeFormGroup(labelText, inputFactory) {
-    var group = document.createElement('div');
-    group.className = 'form-group';
-    var lbl = document.createElement('label');
-    lbl.textContent = labelText;
-    var input = inputFactory();
-    group.appendChild(lbl);
-    group.appendChild(input);
-    return group;
+    panel.appendChild(makeFormGroup('Height (rows)', function () {
+      var inp = document.createElement('input');
+      inp.type  = 'number'; inp.id = 'cfg-rowspan';
+      inp.min   = '1'; inp.max = String(maxRows);
+      inp.value = slot.rowSpan || 1;
+      return inp;
+    }));
+
+    // ── Type-specific fields from CONFIG_SCHEMAS ─────
+    var schema = CONFIG_SCHEMAS[currentType] || [];
+    schema.forEach(function (f) {
+      panel.appendChild(makeSchemaField(f, cfg[f.key]));
+    });
+
+    // ── Action buttons ────────────────────────────────
+    var applyBtn = document.createElement('button');
+    applyBtn.className = 'btn btn-primary';
+    applyBtn.style.cssText = 'width:100%;margin-top:8px';
+    applyBtn.textContent = 'Apply Changes';
+    applyBtn.addEventListener('click', applyConfig);
+    panel.appendChild(applyBtn);
+
+    var removeBtn = document.createElement('button');
+    removeBtn.className = 'btn btn-danger';
+    removeBtn.style.cssText = 'width:100%;margin-top:8px';
+    removeBtn.textContent = 'Remove Widget';
+    removeBtn.addEventListener('click', function () { removeSlot(selectedCell.row, selectedCell.col); });
+    panel.appendChild(removeBtn);
   }
 
   function applyType(newType) {
@@ -291,7 +549,7 @@
     if (slot) {
       if (slot.type !== newType) {
         slot.type   = newType;
-        slot.config = newType === 'camera' ? { name: 'Camera', index: 0 } : {};
+        slot.config = defaultConfig(newType);
       }
     } else {
       layout.slots.push({
@@ -301,7 +559,7 @@
         col:     selectedCell.col,
         rowSpan: 1,
         colSpan: 1,
-        config:  newType === 'camera' ? { name: 'Camera', index: 0 } : {},
+        config:  defaultConfig(newType),
       });
     }
     renderGrid();
@@ -311,11 +569,37 @@
   function applyConfig() {
     if (!selectedCell) return;
     var slot = slotAt(selectedCell.row, selectedCell.col);
-    if (!slot || slot.type !== 'camera') return;
-    var nameEl  = document.getElementById('cfg-cam-name');
-    var indexEl = document.getElementById('cfg-cam-index');
-    if (nameEl)  slot.config.name  = nameEl.value.trim() || 'Camera';
-    if (indexEl) slot.config.index = Math.max(0, parseInt(indexEl.value, 10) || 0);
+    if (!slot) return;
+
+    // Spans
+    var csEl = document.getElementById('cfg-colspan');
+    var rsEl = document.getElementById('cfg-rowspan');
+    if (csEl) slot.colSpan = clamp(parseInt(csEl.value, 10), 1, layout.grid.cols - slot.col + 1);
+    if (rsEl) slot.rowSpan = clamp(parseInt(rsEl.value, 10), 1, layout.grid.rows - slot.row + 1);
+
+    // Type-specific fields
+    var schema = CONFIG_SCHEMAS[slot.type] || [];
+    schema.forEach(function (f) {
+      var inputEl = document.getElementById('cfg-field-' + f.key);
+      if (!inputEl) return;
+      if (f.type === 'number') {
+        slot.config[f.key] = parseFloat(inputEl.value) || f.def;
+      } else if (f.type === 'camera-select') {
+        slot.config[f.key] = parseInt(inputEl.value, 10);
+      } else if (f.type === 'stock-multi') {
+        var checked = Array.prototype.slice.call(inputEl.querySelectorAll('input[type="checkbox"]:checked'));
+        var selected = checked.map(function (box) { return box.value; });
+        var customEl = document.getElementById('cfg-field-' + f.key + '-custom');
+        var customValues = customEl ? customEl.value.split(',').map(function (v) { return v.trim(); }).filter(Boolean) : [];
+        var combined = selected.concat(customValues).filter(function (value, index, array) {
+          return array.indexOf(value) === index;
+        });
+        slot.config[f.key] = combined.length ? combined.join(',') : f.def;
+      } else {
+        slot.config[f.key] = inputEl.value;
+      }
+    });
+
     renderGrid();
     renderConfigPanel();
   }
@@ -344,6 +628,17 @@
   document.getElementById('reset-btn').addEventListener('click', resetLayout);
   document.getElementById('cols-input').addEventListener('change', onGridSizeChange);
   document.getElementById('rows-input').addEventListener('change', onGridSizeChange);
+  document.getElementById('col-sizes-input').addEventListener('change', onSizesChange);
+  document.getElementById('row-sizes-input').addEventListener('change', onSizesChange);
+
+  fetch('/api/cameras')
+    .then(function (r) { return r.json(); })
+    .then(function (list) {
+      ringCameras = list;
+      // Re-render config panel in case a camera cell is already selected
+      renderConfigPanel();
+    })
+    .catch(function () {}); // Ring not connected; fallback is the index number
 
   loadLayout();
 }());

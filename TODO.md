@@ -2,9 +2,7 @@
 
 # Claude Code
 
-/resume widgets
-/resume phase4
-/resume widgetfix
+instead of warning every time a snapshot fails to load, just do a "dropped snapshots counter" and then focus on the real errors
 
 ## Status key
 - [x] Done
@@ -55,7 +53,7 @@
 Current default is snapshot polling (image refresh every 5s). Upgrade options ranked by complexity:
 
 - [ ] **Snapshot polling** (default, done in foundation) — not live, works everywhere
-- [ ] **HLS via ffmpeg transcoding** — ~5s latency, works natively in iOS Safari, needs ffmpeg installed on desktop
+- [x] **HLS via ffmpeg transcoding** — ~5s latency, works natively in iOS Safari, needs ffmpeg installed on desktop
 - [ ] **WebRTC via Ring live stream** — near-zero latency, complex; ring-client-api has WebRTC support but iOS Safari signaling needs testing
 
 ---

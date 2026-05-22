@@ -2,10 +2,12 @@
 
 const fetch = require('node-fetch');
 
-const FEED_URL = 'https://feeds.bbci.co.uk/news/rss.xml';
-const CACHE_TTL = 15 * 60 * 1000;
+// NPR top news — US-focused, includes <media:thumbnail> image tags
+const DEFAULT_FEED = 'https://feeds.npr.org/1001/rss.xml';
+const CACHE_TTL    = 15 * 60 * 1000;
 
-let cache = { data: null, ts: 0 };
+// Keyed by feed URL — different slots can use different feeds
+const caches = {};
 
 const NAMED_ENTITIES = {
   '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&apos;': "'", '&#39;': "'",
@@ -21,7 +23,8 @@ function parseRSS(xml) {
   const items = [];
   const itemRe = /<item>([\s\S]*?)<\/item>/g;
   const titleRe = /<title>(?:<!\[CDATA\[(.*?)\]\]>|(.*?))<\/title>/;
-  const thumbRe = /<media:thumbnail[^>]+url=["']([^"']+)["']/;
+  // Handles BBC <media:thumbnail url="..."> and CNN <media:content url="...">
+  const thumbRe = /<media:(?:thumbnail|content)[^>]+url=["']([^"']+)["']/;
   let match;
   while ((match = itemRe.exec(xml)) !== null) {
     const titleMatch = titleRe.exec(match[1]);
@@ -36,16 +39,19 @@ function parseRSS(xml) {
   return items.slice(0, 8);
 }
 
-async function getHeadlines() {
-  if (cache.data && Date.now() - cache.ts < CACHE_TTL) return cache.data;
+// feedUrl: optional override; defaults to BBC RSS
+async function getHeadlines(feedUrl) {
+  const url   = feedUrl || DEFAULT_FEED;
+  const entry = caches[url];
+  if (entry && entry.data && Date.now() - entry.ts < CACHE_TTL) return entry.data;
   try {
-    const res = await fetch(FEED_URL, { headers: { 'User-Agent': 'wall-assistant/1.0' } });
-    const xml = await res.text();
+    const res       = await fetch(url, { headers: { 'User-Agent': 'wall-assistant/1.0' }, timeout: 8000 });
+    const xml       = await res.text();
     const headlines = parseRSS(xml);
-    if (headlines.length) cache = { data: headlines, ts: Date.now() };
+    if (headlines.length) caches[url] = { data: headlines, ts: Date.now() };
     return headlines;
   } catch (_) {
-    return cache.data || [];
+    return (entry && entry.data) || [];
   }
 }
 

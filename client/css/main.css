@@ -8,6 +8,16 @@
   --radius: 12px;
 }
 
+html {
+  font-size: 20px;
+  font-size: clamp(18px, 1.35vw + 0.9vh, 24px);
+}
+
+html.ios-safari-older {
+  font-size: 19px;
+  font-size: clamp(17px, 1.2vw + 0.8vh, 22px);
+}
+
 *, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
@@ -23,7 +33,7 @@ html, body {
   overflow: hidden;
   overscroll-behavior: none;
   -webkit-text-size-adjust: 100%;
-  /* Belt-and-suspenders for iOS Safari rubber-band on main axis */
+  text-size-adjust: 100%;
   touch-action: none;
 }
 
@@ -31,11 +41,15 @@ html, body {
   display: grid;
   grid-template-columns: 1fr 1fr;
   grid-template-rows: 1fr 1fr;
-  height: 100dvh;
+  width: 100%;
+  height: 100%;
   gap: 10px;
-  padding: 10px;
-  padding-top: max(10px, env(safe-area-inset-top));
-  padding-bottom: max(10px, env(safe-area-inset-bottom));
+  padding: 0.65rem;
+  padding-top: max(0.65rem, env(safe-area-inset-top));
+  padding-bottom: max(0.65rem, env(safe-area-inset-bottom));
+  padding-left: max(0.65rem, env(safe-area-inset-left));
+  padding-right: max(0.65rem, env(safe-area-inset-right));
+  overflow: hidden;
 }
 
 .card {
@@ -43,7 +57,6 @@ html, body {
   border-radius: var(--radius);
   overflow: hidden;
   position: relative;
-  /* Allow tap without 300ms delay; prevent double-tap zoom */
   touch-action: manipulation;
   cursor: pointer;
 }
@@ -66,8 +79,8 @@ html, body {
 }
 
 .camera-placeholder svg {
-  width: 48px;
-  height: 48px;
+  width: 3rem;
+  height: 3rem;
 }
 
 .camera-img {
@@ -83,17 +96,69 @@ html, body {
   display: block;
 }
 
+.camera-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: none;
+}
+
+.camera-video.active {
+  display: block;
+}
+
+.camera-card--offline .camera-placeholder,
+.camera-offline .camera-placeholder {
+  color: #555;
+}
+
+.camera-card--offline::after,
+.camera-offline::after {
+  content: 'Offline';
+  position: absolute;
+  top: 0.625rem;
+  right: 0.625rem;
+  background: rgba(0, 0, 0, 0.65);
+  color: #f87171;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0.2rem 0.45rem;
+  border-radius: 0.25rem;
+  border: 1px solid rgba(248, 113, 113, 0.35);
+}
+
 .camera-label {
   position: absolute;
   bottom: 0;
   left: 0;
   right: 0;
-  padding: 24px 12px 10px;
+  padding: 1.5rem 0.75rem 0.65rem;
   background: linear-gradient(transparent, rgba(0, 0, 0, 0.72));
-  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.12rem;
+  font-size: 0.95rem;
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--text);
+}
+
+.camera-label-name {
+  line-height: 1.1;
+}
+
+.camera-label-age {
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.72);
 }
 
 /* ── Temperature card ── */
@@ -121,7 +186,7 @@ html, body {
 }
 
 .temp-label {
-  font-size: 0.7rem;
+  font-size: 0.85rem;
   color: #555;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -144,7 +209,7 @@ html, body {
 }
 
 .temp-secondary-label {
-  font-size: 0.7rem;
+  font-size: 0.85rem;
   color: #555;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -169,59 +234,80 @@ html, body {
 .stocks-card {
   display: flex;
   flex-direction: column;
-  padding: 14px 16px;
+  padding: 0.65rem 0.75rem 0.75rem;
   gap: 8px;
   cursor: default;
 }
 
 .stocks-header {
-  font-size: clamp(0.65rem, 1.8vw, 0.8rem);
+  flex: 0 0 auto;
+  font-size: clamp(0.8rem, 1.65vw, 1rem);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.12em;
   color: #555;
 }
 
+/* 2-column grid of mini stock cards */
 .stocks-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
   flex: 1;
-  justify-content: center;
+  align-content: start;
 }
 
-.stocks-row {
-  display: grid;
-  grid-template-columns: 1fr auto auto;
-  align-items: baseline;
-  gap: 8px;
+.stocks-item {
+  background: var(--surface2);
+  border-radius: 8px;
+  padding: 0.5rem 0.65rem 0.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.stocks-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
 .stocks-symbol {
-  font-size: clamp(0.75rem, 2.2vw, 1rem);
-  font-weight: 600;
+  font-size: clamp(0.78rem, 1.9vw, 1rem);
+  font-weight: 700;
   color: var(--text);
   white-space: nowrap;
 }
 
 .stocks-price {
-  font-size: clamp(0.75rem, 2.2vw, 1rem);
-  font-weight: 500;
+  font-size: clamp(0.88rem, 2.1vw, 1.1rem);
+  font-weight: 600;
   color: var(--text-muted);
-  text-align: right;
   font-variant-numeric: tabular-nums;
+  margin-top: 1px;
 }
 
 .stocks-change {
-  font-size: clamp(0.65rem, 1.8vw, 0.85rem);
+  font-size: clamp(0.7rem, 1.55vw, 0.9rem);
   font-weight: 600;
-  text-align: right;
-  min-width: 5ch;
   font-variant-numeric: tabular-nums;
 }
 
 .stocks-change.up   { color: #1db954; }
 .stocks-change.down { color: #e9534f; }
+
+/* Sparkline fills remaining height */
+.stocks-chart {
+  flex: 1;
+  min-height: 1.75rem;
+  margin-top: 0.35rem;
+}
+
+.stocks-chart svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
 
 /* ── Camera expand overlay ── */
 
@@ -233,17 +319,27 @@ html, body {
   background: #000;
   align-items: center;
   justify-content: center;
-  touch-action: manipulation;
+  touch-action: none;
+  overscroll-behavior: none;
 }
 
 .camera-expand-overlay.active {
   display: flex;
 }
 
-.camera-expand-img {
+.camera-expand-img,
+.camera-expand-video {
   width: 100%;
   height: 100%;
   object-fit: contain;
+}
+
+.camera-expand-video {
+  display: none;
+}
+
+.camera-expand-video.active {
+  display: block;
 }
 
 .camera-expand-label {
@@ -251,24 +347,24 @@ html, body {
   bottom: 0;
   left: 0;
   right: 0;
-  padding: 32px 16px max(16px, env(safe-area-inset-bottom));
+  padding: 2rem 1rem max(1rem, env(safe-area-inset-bottom));
   background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   color: var(--text);
 }
 
 .camera-expand-close {
   position: absolute;
-  top: max(16px, env(safe-area-inset-top));
-  right: 16px;
-  width: 36px;
-  height: 36px;
+  top: max(1rem, env(safe-area-inset-top));
+  right: 1rem;
+  width: 2.25rem;
+  height: 2.25rem;
   border-radius: 50%;
   background: rgba(0, 0, 0, 0.6);
   border: none;
   color: var(--text);
-  font-size: 16px;
+  font-size: 1rem;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -306,12 +402,14 @@ html, body {
   display: flex;
   flex-direction: column;
   cursor: default;
+  /* Allow vertical pan through the card so the scroll wrap can receive it */
+  touch-action: pan-y;
 }
 
 .news-header {
   flex: 0 0 auto;
-  padding: 10px 14px 8px;
-  font-size: 0.62rem;
+  padding: 0.65rem 0.9rem 0.5rem;
+  font-size: 0.82rem;
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -319,26 +417,375 @@ html, body {
   border-bottom: 1px solid var(--surface2);
 }
 
+/* Native scrollable container — no animation */
 .news-scroll-wrap {
   flex: 1;
-  overflow: hidden;
-  position: relative;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
 }
 
+.news-scroll-wrap::-webkit-scrollbar {
+  display: none;
+}
+
+/* 2-column photo grid */
 .news-scroll-track {
-  will-change: transform;
-  animation: news-scroll 45s linear infinite;
-}
-
-@keyframes news-scroll {
-  from { transform: translateY(0); }
-  to   { transform: translateY(-50%); }
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  padding: 0.5rem;
 }
 
 .news-item {
-  padding: 10px 14px;
-  font-size: clamp(0.78rem, 1.8vw, 0.98rem);
-  line-height: 1.45;
+  border-radius: 0.5rem;
+  overflow: hidden;
+  background: var(--surface2);
+  display: flex;
+  flex-direction: column;
+}
+
+.news-item-img {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  display: block;
+  background: var(--surface);
+}
+
+.news-item-title {
+  padding: 0.45rem 0.6rem 0.6rem;
+  font-size: clamp(0.8rem, 1.6vw, 1rem);
+  line-height: 1.4;
   color: var(--text);
-  border-bottom: 1px solid var(--surface2);
+}
+
+.news-item-no-img .news-item-title {
+  padding: 0.75rem 0.6rem;
+  font-size: clamp(0.86rem, 1.9vw, 1.06rem);
+}
+
+/* ── ISS card ── */
+
+.iss-card {
+  display: flex;
+  flex-direction: column;
+  padding: 0.95rem 1rem;
+  gap: 0.5rem;
+  cursor: default;
+}
+
+.iss-header {
+  font-size: clamp(0.82rem, 1.6vw, 1rem);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: #555;
+}
+
+.iss-position {
+  display: flex;
+  gap: 1rem;
+}
+
+.iss-coord {
+  font-size: clamp(1rem, 2.6vw, 1.35rem);
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.iss-stats {
+  display: flex;
+  gap: 1.25rem;
+}
+
+.iss-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.iss-stat-value {
+  font-size: clamp(1.2rem, 3.1vw, 1.65rem);
+  font-weight: 700;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.iss-stat-label {
+  font-size: 0.82rem;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.iss-flights-section {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: 0.25rem;
+  border-top: 1px solid var(--surface2);
+  padding-top: 0.4rem;
+}
+
+.iss-flights-header {
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #555;
+}
+
+.iss-flights-list {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.iss-flight-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.iss-flight-callsign {
+  font-size: clamp(0.82rem, 1.9vw, 1rem);
+  font-weight: 600;
+  color: var(--text);
+  min-width: 6ch;
+  font-variant-numeric: tabular-nums;
+}
+
+.iss-flight-alt {
+  font-size: clamp(0.72rem, 1.6vw, 0.9rem);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.iss-flight-empty {
+  font-size: 0.92rem;
+  color: #444;
+  font-style: italic;
+}
+
+/* ── Sports card ── */
+
+.sports-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0.8rem 1rem;
+  gap: 0.4rem;
+  cursor: default;
+}
+
+.sports-league-label {
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: #555;
+  align-self: flex-start;
+}
+
+.sports-matchup {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  justify-content: center;
+}
+
+.sports-team {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.125rem;
+  flex: 1;
+}
+
+.sports-team-abbr {
+  font-size: clamp(1.1rem, 3.6vw, 1.75rem);
+  font-weight: 700;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+.sports-team-score {
+  font-size: clamp(2.2rem, 6.2vw, 3.4rem);
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  min-height: 1.2em;
+}
+
+.sports-divider {
+  font-size: clamp(1.1rem, 2.6vw, 1.5rem);
+  color: #333;
+  font-weight: 300;
+  flex-shrink: 0;
+}
+
+.sports-status-text {
+  font-size: clamp(0.82rem, 1.9vw, 1rem);
+  color: var(--text-muted);
+  font-weight: 500;
+  text-align: center;
+}
+
+/* ── Skeleton loading ── */
+
+@keyframes skeleton-shimmer {
+  0%   { background-position: -200% center; }
+  100% { background-position:  200% center; }
+}
+
+.skeleton {
+  background: linear-gradient(90deg, var(--surface2) 25%, #2e2e2e 50%, var(--surface2) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.6s infinite;
+  border-radius: 0.25rem;
+}
+
+/* ── Now Playing card ── */
+
+.nowplaying-card {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.05rem;
+  cursor: default;
+}
+
+.nowplaying-art {
+  width: clamp(72px, 24%, 112px);
+  min-width: 72px;
+  max-width: 112px;
+  aspect-ratio: 1 / 1;
+  border-radius: 0.5rem;
+  flex-shrink: 0;
+  object-fit: cover;
+}
+
+.nowplaying-art-placeholder {
+  background: var(--surface2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: clamp(1.7rem, 4.8vw, 2.5rem);
+  color: #333;
+}
+
+.nowplaying-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+}
+
+.nowplaying-track {
+  font-size: clamp(1rem, 2.6vw, 1.25rem);
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nowplaying-artist {
+  font-size: clamp(0.86rem, 2.1vw, 1.05rem);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nowplaying-album {
+  font-size: clamp(0.74rem, 1.7vw, 0.92rem);
+  color: #555;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+html.ios-safari-older .nowplaying-card {
+  gap: 0.85rem;
+  padding: 0.9rem 0.95rem;
+}
+
+html.ios-safari-older .nowplaying-art {
+  width: clamp(64px, 20%, 98px);
+  min-width: 64px;
+  max-width: 98px;
+}
+
+html.ios-safari-older .nowplaying-art-placeholder {
+  font-size: clamp(1.5rem, 4.2vw, 2rem);
+}
+
+html.ios-safari-older .nowplaying-info {
+  gap: 0.22rem;
+}
+
+@supports not (font-size: clamp(1rem, 2vw, 3rem)) {
+  .temp-value { font-size: 4rem; }
+  .temp-secondary-value { font-size: 2rem; }
+  .temp-condition { font-size: 1rem; }
+  .temp-hilo { font-size: 0.8rem; }
+
+  .stocks-header { font-size: 0.9rem; }
+  .stocks-symbol { font-size: 0.85rem; }
+  .stocks-price { font-size: 0.95rem; }
+  .stocks-change { font-size: 0.8rem; }
+
+  .clock-time { font-size: 4rem; }
+  .clock-date { font-size: 0.9rem; }
+
+  .news-header { font-size: 0.85rem; }
+  .news-item-title { font-size: 0.9rem; }
+  .news-item-no-img .news-item-title { font-size: 0.95rem; }
+
+  .iss-header { font-size: 0.9rem; }
+  .iss-coord { font-size: 1.1rem; }
+  .iss-stat-value { font-size: 1.35rem; }
+  .iss-stat-label { font-size: 0.8rem; }
+  .iss-flight-callsign { font-size: 0.9rem; }
+  .iss-flight-alt { font-size: 0.8rem; }
+
+  .sports-team-abbr { font-size: 1.4rem; }
+  .sports-team-score { font-size: 2.8rem; }
+  .sports-divider { font-size: 1.2rem; }
+  .sports-status-text { font-size: 0.9rem; }
+
+  .nowplaying-art-placeholder { font-size: 2.1rem; }
+  .nowplaying-track { font-size: 1.1rem; }
+  .nowplaying-artist { font-size: 0.95rem; }
+  .nowplaying-album { font-size: 0.8rem; }
+}
+
+.nowplaying-bar {
+  margin-top: 0.4rem;
+  height: 0.15rem;
+  background: var(--surface2);
+  border-radius: 0.08rem;
+  overflow: hidden;
+}
+
+.nowplaying-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 0.08rem;
+  transition: width 1s linear;
 }

@@ -4,15 +4,41 @@
   var ws;
   var SVG_NS = 'http://www.w3.org/2000/svg';
 
+  function isOlderIosSafari() {
+    var ua = navigator.userAgent || '';
+    var isIosDevice = /iP(ad|hone|od)/.test(ua) || (ua.indexOf('Macintosh') >= 0 && 'ontouchend' in document);
+    if (!isIosDevice) return false;
+
+    var versionMatch = ua.match(/Version\/(\d+)/);
+    if (!versionMatch) return false;
+
+    return parseInt(versionMatch[1], 10) < 26;
+  }
+
+  if (isOlderIosSafari()) {
+    document.documentElement.classList.add('ios-safari-older');
+  }
+
+  // Populated each time the layout renders; drives per-widget config (clock format, temp units, etc.)
+  var slotsByType = {}; // type -> first slot of that type
+  var pendingClientErrors = [];
+  var maxPendingClientErrors = 8;
+
   // ── Grid rendering ────────────────────────────────────
 
   function renderLayout(layout) {
     var grid = document.getElementById('grid');
-    var g = layout.grid;
-    grid.style.gridTemplateColumns = 'repeat(' + g.cols + ', 1fr)';
-    grid.style.gridTemplateRows = 'repeat(' + g.rows + ', 1fr)';
-    grid.innerHTML = '';
+    var g    = layout.grid;
+
+    var colSizes = g.colSizes || Array(g.cols).fill(1);
+    var rowSizes = g.rowSizes || Array(g.rows).fill(1);
+    grid.style.gridTemplateColumns = colSizes.map(function (v) { return v + 'fr'; }).join(' ');
+    grid.style.gridTemplateRows    = rowSizes.map(function (v) { return v + 'fr'; }).join(' ');
+
+    while (grid.firstChild) grid.removeChild(grid.firstChild);
+    slotsByType = {};
     layout.slots.forEach(function (slot) {
+      if (!slotsByType[slot.type]) slotsByType[slot.type] = slot;
       grid.appendChild(createCard(slot));
     });
   }
@@ -36,6 +62,111 @@
     return document.createElementNS(SVG_NS, tag);
   }
 
+  function isScrollableRegion(node) {
+    while (node && node !== document.body) {
+      if (node.classList && node.classList.contains('news-scroll-wrap')) return true;
+      node = node.parentNode;
+    }
+    return false;
+  }
+
+  function bindTap(node, handler) {
+    var touchStartX = 0;
+    var touchStartY = 0;
+    var touchMoved = false;
+    var suppressClick = false;
+
+    function fireTap(e) {
+      suppressClick = true;
+      window.setTimeout(function () { suppressClick = false; }, 400);
+      handler(e);
+    }
+
+    node.addEventListener('pointerup', function (e) {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      if (touchMoved) return;
+      fireTap(e);
+    });
+
+    node.addEventListener('touchstart', function (e) {
+      if (e.touches.length !== 1) return;
+      var touch = e.touches[0];
+      touchStartX = touch.clientX;
+      touchStartY = touch.clientY;
+      touchMoved = false;
+    }, { passive: true });
+
+    node.addEventListener('touchmove', function (e) {
+      if (e.touches.length !== 1) {
+        touchMoved = true;
+        return;
+      }
+      var touch = e.touches[0];
+      if (Math.abs(touch.clientX - touchStartX) > 12 || Math.abs(touch.clientY - touchStartY) > 12) {
+        touchMoved = true;
+      }
+    }, { passive: true });
+
+    node.addEventListener('touchend', function (e) {
+      if (touchMoved) return;
+      e.preventDefault();
+      fireTap(e);
+    }, { passive: false });
+
+    node.addEventListener('click', function (e) {
+      if (suppressClick) {
+        e.preventDefault();
+        return;
+      }
+      handler(e);
+    });
+  }
+
+  function installScrollLockFallback() {
+    document.addEventListener('touchmove', function (e) {
+      if (isScrollableRegion(e.target)) return;
+      e.preventDefault();
+    }, { passive: false });
+  }
+
+  function makeSkeleton(cls, style) {
+    var node = el('div', cls ? 'skeleton ' + cls : 'skeleton');
+    if (style) node.style.cssText = style;
+    return node;
+  }
+
+  function queueClientError(source, message, detail) {
+    pendingClientErrors.unshift({
+      type: 'client-error',
+      source: source,
+      message: message,
+      detail: detail,
+      href: location.href,
+      time: new Date().toISOString(),
+    });
+    if (pendingClientErrors.length > maxPendingClientErrors) {
+      pendingClientErrors.length = maxPendingClientErrors;
+    }
+    flushClientErrors();
+  }
+
+  function flushClientErrors() {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !pendingClientErrors.length) return;
+    while (pendingClientErrors.length) {
+      var entry = pendingClientErrors.pop();
+      try {
+        ws.send(JSON.stringify(entry));
+      } catch (_) {
+        pendingClientErrors.push(entry);
+        break;
+      }
+    }
+  }
+
+  function reportClientError(source, message, detail) {
+    queueClientError(source, message, detail);
+  }
+
   function createCard(slot) {
     var card = el('div', 'card');
     card.id = slot.id;
@@ -52,14 +183,26 @@
       var img = el('img', 'camera-img');
       img.src = '';
       img.alt = (slot.config && slot.config.name) || 'Camera';
+      img.addEventListener('error', function () {
+        reportClientError('camera', 'Snapshot failed to load', (slot.config && slot.config.name) || slot.id);
+      });
+
+      var video = el('video', 'camera-video');
+      video.autoplay = true;
+      video.muted    = true;
+      video.setAttribute('playsinline', '');
+      video.addEventListener('error', function () {
+        reportClientError('camera', 'Live video failed to load', (slot.config && slot.config.name) || slot.id);
+      });
 
       var label = el('div', 'camera-label');
       label.textContent = (slot.config && slot.config.name) || 'Camera';
 
       card.appendChild(placeholder);
       card.appendChild(img);
+      card.appendChild(video);
       card.appendChild(label);
-      card.addEventListener('click', function () { openCameraExpand(slot.id); });
+      bindTap(card, function () { openCameraExpand(slot.id); });
 
     } else if (slot.type === 'temperature') {
       card.classList.add('temp-card');
@@ -96,49 +239,281 @@
     } else if (slot.type === 'stocks') {
       card.classList.add('stocks-card');
       var stocksHeader = el('div', 'stocks-header');
-      stocksHeader.textContent = 'Markets';
+      stocksHeader.textContent = (slot.config && slot.config.title) || 'Markets';
       var stocksList = el('div', 'stocks-list');
       stocksList.id = 'stocks-list-' + slot.id;
+      var stockCount = Math.max(2, Math.min(4, (slot.config && slot.config.symbols ? slot.config.symbols.split(',').length : 3)));
+      for (var si = 0; si < stockCount; si++) {
+        var stockSkeleton = el('div', 'stocks-item');
+        var stockHead = el('div', 'stocks-item-header');
+        stockHead.appendChild(makeSkeleton('', 'height: 0.9em; width: 42%; border-radius: 999px;'));
+        stockHead.appendChild(makeSkeleton('', 'height: 0.9em; width: 22%; border-radius: 999px;'));
+        stockSkeleton.appendChild(stockHead);
+        stockSkeleton.appendChild(makeSkeleton('', 'height: 1.2em; width: 34%; margin-top: 4px; border-radius: 999px;'));
+        stockSkeleton.appendChild(makeSkeleton('', 'height: 32px; width: 100%; margin-top: 8px; border-radius: 6px;'));
+        stocksList.appendChild(stockSkeleton);
+      }
       card.appendChild(stocksHeader);
       card.appendChild(stocksList);
 
     } else if (slot.type === 'news') {
       card.classList.add('news-card');
       var newsHeader = el('div', 'news-header');
-      newsHeader.textContent = 'Top Headlines';
+      newsHeader.textContent = (slot.config && slot.config.title) || 'Top Headlines';
       var newsWrap = el('div', 'news-scroll-wrap');
       var newsTrack = el('div', 'news-scroll-track');
       newsTrack.dataset.slotId = slot.id;
+      for (var ni = 0; ni < 4; ni++) {
+        var newsItem = el('div', 'news-item news-item-no-img');
+        newsItem.appendChild(makeSkeleton('', 'height: 100%; width: 100%; min-height: 64px; border-radius: 8px;'));
+        newsTrack.appendChild(newsItem);
+      }
       newsWrap.appendChild(newsTrack);
       card.appendChild(newsHeader);
       card.appendChild(newsWrap);
+
+    } else if (slot.type === 'iss') {
+      card.classList.add('iss-card');
+
+      var issHdr = el('div', 'iss-header'); issHdr.textContent = 'ISS Tracker';
+
+      var issPos = el('div', 'iss-position');
+      var issLat = el('div', 'iss-coord iss-lat'); issLat.textContent = '--° N';
+      var issLon = el('div', 'iss-coord iss-lon'); issLon.textContent = '--° W';
+      issPos.appendChild(issLat); issPos.appendChild(issLon);
+
+      var issStats = el('div', 'iss-stats');
+
+      var altStat = el('div', 'iss-stat');
+      var altVal  = el('div', 'iss-stat-value iss-alt-val'); altVal.textContent = '--';
+      var altLbl  = el('div', 'iss-stat-label'); altLbl.textContent = 'km altitude';
+      altStat.appendChild(altVal); altStat.appendChild(altLbl);
+
+      var velStat = el('div', 'iss-stat');
+      var velVal  = el('div', 'iss-stat-value iss-vel-val'); velVal.textContent = '--';
+      var velLbl  = el('div', 'iss-stat-label'); velLbl.textContent = 'km/h';
+      velStat.appendChild(velVal); velStat.appendChild(velLbl);
+
+      issStats.appendChild(altStat); issStats.appendChild(velStat);
+      card.appendChild(issHdr); card.appendChild(issPos); card.appendChild(issStats);
+
+      if (!slot.config || slot.config.showFlights !== 'false') {
+        var flightsSec = el('div', 'iss-flights-section');
+        var flightsHdr = el('div', 'iss-flights-header'); flightsHdr.textContent = 'Overhead';
+        var flightsList = el('div', 'iss-flights-list');
+        flightsList.appendChild(makeSkeleton('', 'height: 1em; width: 58%; margin: 2px 0 6px; border-radius: 999px;'));
+        flightsList.appendChild(makeSkeleton('', 'height: 1em; width: 74%; margin: 2px 0; border-radius: 999px;'));
+        flightsSec.appendChild(flightsHdr); flightsSec.appendChild(flightsList);
+        card.appendChild(flightsSec);
+      }
+
+    } else if (slot.type === 'sports') {
+      card.classList.add('sports-card');
+      var sCfg = slot.config || {};
+
+      var sportsLbl = el('div', 'sports-league-label');
+      sportsLbl.textContent = ((sCfg.league || 'NFL') + (sCfg.team ? ' · ' + sCfg.team : '')).toUpperCase();
+
+      var matchup = el('div', 'sports-matchup');
+
+      var awayTeam  = el('div', 'sports-team');
+      var awayAbbr  = el('div', 'sports-team-abbr sports-away-abbr'); awayAbbr.textContent = '--';
+      var awayScore = el('div', 'sports-team-score sports-away-score');
+      awayTeam.appendChild(awayAbbr); awayTeam.appendChild(awayScore);
+
+      var sdivider = el('div', 'sports-divider'); sdivider.textContent = '@';
+
+      var homeTeam  = el('div', 'sports-team');
+      var homeAbbr  = el('div', 'sports-team-abbr sports-home-abbr'); homeAbbr.textContent = '--';
+      var homeScore = el('div', 'sports-team-score sports-home-score');
+      homeTeam.appendChild(homeAbbr); homeTeam.appendChild(homeScore);
+
+      matchup.appendChild(awayTeam); matchup.appendChild(sdivider); matchup.appendChild(homeTeam);
+
+      var sportsStatus = el('div', 'sports-status-text'); sportsStatus.textContent = 'Loading…';
+
+      card.appendChild(sportsLbl); card.appendChild(matchup); card.appendChild(sportsStatus);
+
+    } else if (slot.type === 'nowplaying') {
+      card.classList.add('nowplaying-card');
+
+      var npArtPh = el('div', 'nowplaying-art nowplaying-art-placeholder');
+      npArtPh.textContent = '♪';
+
+      var npArt = el('img', 'nowplaying-art nowplaying-art-img');
+      npArt.src = ''; npArt.alt = 'Album Art'; npArt.style.display = 'none';
+
+      var npInfo   = el('div', 'nowplaying-info');
+      var npTrack  = el('div', 'nowplaying-track');  npTrack.textContent = 'Not Playing';
+      var npArtist = el('div', 'nowplaying-artist');
+      var npAlbum  = el('div', 'nowplaying-album');
+      var npDevice = el('div', 'nowplaying-device');
+      var npContext = el('div', 'nowplaying-context');
+      var npBar    = el('div', 'nowplaying-bar');
+      var npFill   = el('div', 'nowplaying-bar-fill'); npFill.style.width = '0%';
+      npBar.appendChild(npFill);
+      npInfo.appendChild(npTrack); npInfo.appendChild(npArtist);
+      npInfo.appendChild(npAlbum); npInfo.appendChild(npDevice);
+      npInfo.appendChild(npContext); npInfo.appendChild(npBar);
+
+      card.appendChild(npArtPh); card.appendChild(npArt); card.appendChild(npInfo);
     }
 
     return card;
   }
 
+  // ── HLS helpers ───────────────────────────────────────
+
+  // Attach an HLS stream to a video element, using hls.js on non-Safari
+  // or native src assignment on Safari (which supports HLS natively).
+  function attachHls(videoEl, url) {
+    detachHls(videoEl);
+    if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+      var hls = new Hls({ lowLatencyMode: false, debug: false });
+      hls.loadSource(url);
+      hls.attachMedia(videoEl);
+      videoEl._hls = hls;
+    } else {
+      videoEl.src = url;
+    }
+    videoEl.play().catch(function () {});
+  }
+
+  function detachHls(videoEl) {
+    if (videoEl._hls) { videoEl._hls.destroy(); videoEl._hls = null; }
+    videoEl.src = '';
+    videoEl.load();
+  }
+
   // ── Camera expand overlay ─────────────────────────────
 
+  // keyed by slotId — populated by updateCameras
+  // { mode: 'snapshot'|'hls', url, hlsUrl, sessionId, name }
   var cameraData = {};
 
-  var overlay    = document.getElementById('camera-overlay');
-  var overlayImg = document.getElementById('camera-overlay-img');
-  var overlayLbl = document.getElementById('camera-overlay-label');
+  var overlay      = document.getElementById('camera-overlay');
+  var overlayImg   = document.getElementById('camera-overlay-img');
+  var overlayVideo = document.getElementById('camera-overlay-video');
+  var overlayLbl   = document.getElementById('camera-overlay-label');
+  var bodyScrollLock = null;
+  var currentOverlaySlotId = null;
+
+  function lockBodyScroll() {
+    if (bodyScrollLock) return;
+    var body = document.body;
+    var scrollY = window.pageYOffset || window.scrollY || 0;
+
+    bodyScrollLock = {
+      scrollY: scrollY,
+      position: body.style.position,
+      top: body.style.top,
+      left: body.style.left,
+      right: body.style.right,
+      width: body.style.width,
+      overflow: body.style.overflow
+    };
+
+    body.style.position = 'fixed';
+    body.style.top = '-' + scrollY + 'px';
+    body.style.left = '0';
+    body.style.right = '0';
+    body.style.width = '100%';
+    body.style.overflow = 'hidden';
+  }
+
+  function unlockBodyScroll() {
+    if (!bodyScrollLock) return;
+    var body = document.body;
+    var state = bodyScrollLock;
+
+    body.style.position = state.position;
+    body.style.top = state.top;
+    body.style.left = state.left;
+    body.style.right = state.right;
+    body.style.width = state.width;
+    body.style.overflow = state.overflow;
+
+    bodyScrollLock = null;
+    window.scrollTo(0, state.scrollY);
+  }
 
   function openCameraExpand(slotId) {
     var data = cameraData[slotId];
     if (!data) return;
-    overlayImg.src = data.url;
-    overlayLbl.textContent = data.name;
+    currentOverlaySlotId = slotId;
+    updateCameraLabel(overlayLbl, data);
+    if (data.mode === 'hls' && data.hlsUrl) {
+      overlayImg.style.display = 'none';
+      overlayVideo.classList.add('active');
+      attachHls(overlayVideo, data.hlsUrl);
+    } else if (data.url) {
+      overlayVideo.classList.remove('active');
+      detachHls(overlayVideo);
+      overlayImg.style.display = '';
+      overlayImg.src = data.url;
+    }
+    lockBodyScroll();
     overlay.classList.add('active');
   }
 
   function closeCameraExpand() {
     overlay.classList.remove('active');
+    // Stop the overlay video when dismissed to free resources
+    overlayVideo.classList.remove('active');
+    detachHls(overlayVideo);
+    overlayImg.style.display = '';
+    currentOverlaySlotId = null;
+    unlockBodyScroll();
   }
 
-  overlay.addEventListener('click', closeCameraExpand);
-  document.getElementById('camera-overlay-close').addEventListener('click', function (e) {
+  function formatCameraAge(updatedAt) {
+    if (!updatedAt) return '';
+    var timestamp = new Date(updatedAt).getTime();
+    if (!isFinite(timestamp)) return '';
+
+    var seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+    if (seconds < 60) {
+      return seconds <= 1 ? '1s ago' : seconds + 's ago';
+    }
+
+    return Math.floor(seconds / 60) + 'm ago';
+  }
+
+  function updateCameraLabel(labelEl, data) {
+    if (!labelEl || !data) return;
+    var ageText = formatCameraAge(data.lastUpdated);
+    while (labelEl.firstChild) labelEl.removeChild(labelEl.firstChild);
+
+    var nameEl = el('span', 'camera-label-name');
+    nameEl.textContent = data.name;
+    labelEl.appendChild(nameEl);
+
+    if (ageText) {
+      var ageEl = el('span', 'camera-label-age');
+      ageEl.textContent = ageText;
+      labelEl.appendChild(ageEl);
+    }
+  }
+
+  function refreshCameraAges() {
+    Object.keys(cameraData).forEach(function (slotId) {
+      var data = cameraData[slotId];
+      var card = document.getElementById(slotId);
+      if (card) {
+        updateCameraLabel(card.querySelector('.camera-label'), data);
+      }
+    });
+
+    if (currentOverlaySlotId && overlay.classList.contains('active')) {
+      updateCameraLabel(overlayLbl, cameraData[currentOverlaySlotId]);
+    }
+  }
+
+  overlay.addEventListener('touchmove', function (e) {
+    e.preventDefault();
+  }, { passive: false });
+  bindTap(overlay, closeCameraExpand);
+  bindTap(document.getElementById('camera-overlay-close'), function (e) {
     e.stopPropagation();
     closeCameraExpand();
   });
@@ -146,10 +521,24 @@
     if (e.key === 'Escape') closeCameraExpand();
   });
 
+  installScrollLockFallback();
+
   // ── Data update handlers ──────────────────────────────
 
-  function formatF(val) {
-    return val != null ? Math.round(val) + '°F' : '--°';
+  function formatTemp(fahrenheit, celsius, units) {
+    if (units === 'celsius') {
+      var c = celsius != null ? celsius : (fahrenheit != null ? (fahrenheit - 32) * 5 / 9 : null);
+      return (c != null ? Math.round(c) : '--') + '°C';
+    }
+    return (fahrenheit != null ? Math.round(fahrenheit) : '--') + '°F';
+  }
+
+  function formatHiLo(highF, lowF, units) {
+    if (highF == null || lowF == null) return '';
+    if (units === 'celsius') {
+      return 'H:' + Math.round((highF - 32) * 5 / 9) + '°  L:' + Math.round((lowF - 32) * 5 / 9) + '°';
+    }
+    return 'H:' + highF + '°  L:' + lowF + '°';
   }
 
   function updateTemperature(temp) {
@@ -161,17 +550,20 @@
     var secLabel = document.getElementById('temp-secondary-label');
     if (!valEl) return;
 
+    var tempSlot = slotsByType['temperature'];
+    var units    = (tempSlot && tempSlot.config && tempSlot.config.units) || 'fahrenheit';
+
     var outdoor = temp.outdoor || temp;
     var indoor  = temp.indoor  || null;
 
     if (indoor) {
-      valEl.textContent    = formatF(indoor.fahrenheit);
+      valEl.textContent    = formatTemp(indoor.fahrenheit, indoor.celsius, units);
       labelEl.textContent  = 'Indoor';
-      secVal.textContent   = formatF(outdoor.fahrenheit);
+      secVal.textContent   = formatTemp(outdoor.fahrenheit, outdoor.celsius, units);
       secLabel.textContent = 'Outdoor';
       secRow.style.display = 'flex';
     } else {
-      valEl.textContent    = formatF(outdoor.fahrenheit);
+      valEl.textContent    = formatTemp(outdoor.fahrenheit, outdoor.celsius, units);
       labelEl.textContent  = 'Outdoor';
       secRow.style.display = 'none';
     }
@@ -179,11 +571,7 @@
     condEl.textContent = outdoor.condition || '';
 
     var hiloEl = document.getElementById('temp-hilo');
-    if (hiloEl) {
-      hiloEl.textContent = (outdoor.highF != null && outdoor.lowF != null)
-        ? 'H:' + outdoor.highF + '°  L:' + outdoor.lowF + '°'
-        : '';
-    }
+    if (hiloEl) hiloEl.textContent = formatHiLo(outdoor.highF, outdoor.lowF, units);
   }
 
   // ── Sparkline SVG (DOM-built — no innerHTML with user data) ──
@@ -240,10 +628,13 @@
 
   function clearEl(node) { while (node.firstChild) node.removeChild(node.firstChild); }
 
-  function updateStocks(stocks) {
-    document.querySelectorAll('[id^="stocks-list-"]').forEach(function (listEl) {
+  // stocks is [{slotId, items}]
+  function updateStocks(stocksArr) {
+    stocksArr.forEach(function (entry) {
+      var listEl = document.getElementById('stocks-list-' + entry.slotId);
+      if (!listEl) return;
       clearEl(listEl);
-      stocks.forEach(function (s) {
+      (entry.items || []).forEach(function (s) {
         var item = el('div', 'stocks-item');
 
         var header = el('div', 'stocks-item-header');
@@ -276,34 +667,39 @@
     });
   }
 
-  function updateHeadlines(headlines) {
-    document.querySelectorAll('.news-scroll-track').forEach(function (track) {
+  // headlinesArr is [{slotId, items: [{title, imageUrl}]}]
+  function updateHeadlines(headlinesArr) {
+    headlinesArr.forEach(function (entry) {
+      var track = document.querySelector('.news-scroll-track[data-slot-id="' + entry.slotId + '"]');
+      if (!track) return;
       clearEl(track);
-      if (!headlines || !headlines.length) {
+      var items = entry.items || [];
+      if (!items.length) {
         var empty = el('div', 'news-item');
         empty.textContent = 'No headlines available';
         track.appendChild(empty);
         return;
       }
-      headlines.forEach(function (hl) {
-        var title = typeof hl === 'string' ? hl : hl.title;
+      // Duplicate list so the CSS translate(-50%) loop is seamless
+      var doubled = items.concat(items);
+      doubled.forEach(function (hl) {
+        var title    = typeof hl === 'string' ? hl : hl.title;
         var imageUrl = hl && hl.imageUrl ? hl.imageUrl : null;
-
         var item = el('div', 'news-item');
         if (!imageUrl) item.classList.add('news-item-no-img');
-
         if (imageUrl) {
           var img = el('img', 'news-item-img');
-          img.alt = '';
-          img.src = imageUrl; // URL from BBC RSS feed
+          img.alt = ''; img.src = imageUrl;
           item.appendChild(img);
         }
-
-        var titleEl = el('div', 'news-item-title');
-        titleEl.textContent = title;
+        var titleEl = el('div', 'news-item-title'); titleEl.textContent = title;
         item.appendChild(titleEl);
         track.appendChild(item);
       });
+      track.style.animationDuration = (items.length * 5) + 's';
+      track.style.animationName = 'none';
+      void track.offsetHeight;
+      track.style.animationName = '';
     });
   }
 
@@ -311,27 +707,224 @@
     cameras.forEach(function (cam) {
       var slotId = cam.slotId;
       var card   = slotId && document.getElementById(slotId);
-      var img    = card && card.querySelector('.camera-img');
-      var nameEl = card && card.querySelector('.camera-label');
-      if (!img) return;
+      if (!card) return;
+      var img    = card.querySelector('.camera-img');
+      var vid    = card.querySelector('.camera-video');
+      var nameEl = card.querySelector('.camera-label');
       if (cam.name && nameEl) nameEl.textContent = cam.name;
-      if (cam.snapshotUrl) {
-        img.src = cam.snapshotUrl;
-        img.classList.add('loaded');
-        cameraData[slotId] = { url: cam.snapshotUrl, name: cam.name || slotId };
+
+      if (cam.offline) {
+        // ── Offline ───────────────────────────────────────
+        card.classList.add('camera-offline');
+        if (vid) { vid.classList.remove('active'); detachHls(vid); }
+        if (img) { img.classList.remove('loaded'); }
+        cameraData[slotId] = { mode: 'offline', name: cam.name || slotId, lastUpdated: cam.lastUpdated || null };
+
+      } else if (cam.hlsUrl) {
+        // ── HLS mode ──────────────────────────────────────
+        // Parse the session ID from the ?s= query param so we only reload
+        // video.src on an actual stream restart, not every 5s WS tick.
+        card.classList.remove('camera-offline');
+        var newSid;
+        try { newSid = new URL(cam.hlsUrl, location.href).searchParams.get('s'); } catch (_) {}
+        var prev = cameraData[slotId];
+        if (vid && (!prev || prev.sessionId !== newSid)) {
+          attachHls(vid, cam.hlsUrl);
+          vid.classList.add('active');
+        }
+        if (img) { img.style.display = 'none'; img.classList.remove('loaded'); }
+        cameraData[slotId] = { mode: 'hls', hlsUrl: cam.hlsUrl, sessionId: newSid, name: cam.name || slotId, lastUpdated: cam.lastUpdated || null };
+
+      } else if (cam.snapshotUrl) {
+        // ── Snapshot mode ─────────────────────────────────
+        card.classList.remove('camera-offline');
+        if (vid) { vid.classList.remove('active'); detachHls(vid); }
+        if (img) {
+          img.style.display = '';
+          img.src = cam.snapshotUrl;
+          img.classList.add('loaded');
+        }
+        cameraData[slotId] = { mode: 'snapshot', url: cam.snapshotUrl, name: cam.name || slotId, lastUpdated: cam.lastUpdated || null };
       }
+
+      updateCameraLabel(nameEl, cameraData[slotId]);
     });
+
+    refreshCameraAges();
   }
 
   function updateClock() {
-    var now    = new Date();
-    var h      = now.getHours().toString().padStart(2, '0');
-    var m      = now.getMinutes().toString().padStart(2, '0');
+    var clockSlot = slotsByType['clock'];
+    var clockCfg  = (clockSlot && clockSlot.config) || {};
+    var is12h   = clockCfg.format === '12h';
+    var showSec = clockCfg.showSeconds === 'true';
+
+    var now = new Date();
+    var h   = now.getHours();
+    var m   = now.getMinutes();
+    var s   = now.getSeconds();
+    var ampm = '';
+
+    if (is12h) {
+      ampm = h >= 12 ? ' PM' : ' AM';
+      h    = h % 12 || 12;
+    }
+
+    var timeStr = String(h).padStart(is12h ? 1 : 2, '0') + ':' + String(m).padStart(2, '0');
+    if (showSec) timeStr += ':' + String(s).padStart(2, '0');
+    if (ampm)    timeStr += ampm;
+
     var timeEl = document.getElementById('clock-time');
     var dateEl = document.getElementById('clock-date');
-    if (timeEl) timeEl.textContent = h + ':' + m;
+    if (timeEl) timeEl.textContent = timeStr;
     if (dateEl) dateEl.textContent = now.toLocaleDateString('en-US', {
       weekday: 'long', month: 'long', day: 'numeric',
+    });
+  }
+
+  // ── ISS ───────────────────────────────────────────────
+
+  function formatCoord(val, axis) {
+    if (val == null) return '--';
+    var dir = axis === 'NS' ? (val >= 0 ? 'N' : 'S') : (val >= 0 ? 'E' : 'W');
+    return Math.abs(val).toFixed(2) + '° ' + dir;
+  }
+
+  function updateISS(data) {
+    if (!data) return;
+    document.querySelectorAll('.iss-card').forEach(function (card) {
+      var latEl = card.querySelector('.iss-lat');
+      var lonEl = card.querySelector('.iss-lon');
+      var altEl = card.querySelector('.iss-alt-val');
+      var velEl = card.querySelector('.iss-vel-val');
+      if (latEl) latEl.textContent = formatCoord(data.latitude,  'NS');
+      if (lonEl) lonEl.textContent = formatCoord(data.longitude, 'EW');
+      if (altEl) altEl.textContent = data.altitudeKm != null ? data.altitudeKm.toLocaleString() : '--';
+      if (velEl) velEl.textContent = data.speedKmh   != null ? data.speedKmh.toLocaleString()   : '--';
+
+      var flightsList = card.querySelector('.iss-flights-list');
+      if (!flightsList) return;
+      clearEl(flightsList);
+      var flights = data.flights || [];
+      if (!flights.length) {
+        var none = el('div', 'iss-flight-empty'); none.textContent = 'No flights overhead';
+        flightsList.appendChild(none);
+        return;
+      }
+      flights.forEach(function (f) {
+        var row = el('div', 'iss-flight-row');
+        var cs  = el('span', 'iss-flight-callsign'); cs.textContent = f.callsign;
+        var alt = el('span', 'iss-flight-alt');
+        alt.textContent = f.altitudeFt != null ? f.altitudeFt.toLocaleString() + ' ft' : '';
+        row.appendChild(cs); row.appendChild(alt);
+        flightsList.appendChild(row);
+      });
+    });
+  }
+
+  // ── Sports ────────────────────────────────────────────
+
+  function updateSports(sportsArr) {
+    if (!sportsArr) return;
+    sportsArr.forEach(function (entry) {
+      var card = document.getElementById(entry.slotId);
+      if (!card) return;
+      var game = entry.game;
+      if (!game) return;
+
+      var awayAbbr  = card.querySelector('.sports-away-abbr');
+      var homeAbbr  = card.querySelector('.sports-home-abbr');
+      var awayScore = card.querySelector('.sports-away-score');
+      var homeScore = card.querySelector('.sports-home-score');
+      var statusEl  = card.querySelector('.sports-status-text');
+
+      if (game.status === 'no_game' || game.status === 'error') {
+        if (awayAbbr)  awayAbbr.textContent  = '--';
+        if (homeAbbr)  homeAbbr.textContent  = '--';
+        if (awayScore) awayScore.textContent = '';
+        if (homeScore) homeScore.textContent = '';
+        if (statusEl)  statusEl.textContent  = game.status === 'no_game' ? 'No game today' : 'Unavailable';
+        return;
+      }
+
+      var showScore = game.status === 'in_progress' || game.status === 'final';
+      if (awayAbbr)  awayAbbr.textContent  = (game.away && game.away.name) || '--';
+      if (homeAbbr)  homeAbbr.textContent  = (game.home && game.home.name) || '--';
+      if (awayScore) awayScore.textContent = showScore ? ((game.away && game.away.score) || '0') : '';
+      if (homeScore) homeScore.textContent = showScore ? ((game.home && game.home.score) || '0') : '';
+
+      var statusText = '';
+      if (game.status === 'in_progress') {
+        statusText = game.clock ? game.period + ' · ' + game.clock : 'In Progress';
+      } else if (game.status === 'final') {
+        statusText = 'Final';
+      } else if (game.status === 'scheduled') {
+        var d = game.date ? new Date(game.date) : null;
+        statusText = d
+          ? d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) +
+            ' · ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+          : 'Scheduled';
+      }
+      if (statusEl) statusEl.textContent = statusText;
+    });
+  }
+
+  // ── Now Playing ───────────────────────────────────────
+
+  function updateNowPlaying(data) {
+    if (!data) return;
+    window.spotifyNowPlaying = data;
+    document.querySelectorAll('.nowplaying-card').forEach(function (card) {
+      var artImg  = card.querySelector('.nowplaying-art-img');
+      var artPh   = card.querySelector('.nowplaying-art-placeholder');
+      var trackEl  = card.querySelector('.nowplaying-track');
+      var artistEl = card.querySelector('.nowplaying-artist');
+      var albumEl  = card.querySelector('.nowplaying-album');
+      var deviceEl = card.querySelector('.nowplaying-device');
+      var contextEl = card.querySelector('.nowplaying-context');
+      var barFill  = card.querySelector('.nowplaying-bar-fill');
+      var client = data.client || data.device || null;
+      var context = data.context || null;
+
+      if (!data.playing) {
+        if (artImg) artImg.style.display = 'none';
+        if (artPh)  artPh.style.display  = '';
+        if (trackEl)  trackEl.textContent  = 'Not Playing';
+        if (artistEl) artistEl.textContent = '';
+        if (albumEl)  albumEl.textContent  = '';
+        if (deviceEl) deviceEl.textContent = '';
+        if (contextEl) contextEl.textContent = '';
+        if (barFill)  barFill.style.width  = '0%';
+        return;
+      }
+
+      if (data.albumArt && artImg) {
+        artImg.src = data.albumArt;
+        artImg.style.display = '';
+        if (artPh) artPh.style.display = 'none';
+      } else {
+        if (artImg) artImg.style.display = 'none';
+        if (artPh)  artPh.style.display  = '';
+      }
+
+      if (trackEl)  trackEl.textContent  = data.track  || '';
+      if (artistEl) artistEl.textContent = data.artist || '';
+      if (albumEl)  albumEl.textContent  = data.album  || '';
+      if (deviceEl) {
+        deviceEl.textContent = client && client.name
+          ? 'On ' + client.name + (client.type ? ' · ' + client.type : '')
+          : '';
+      }
+      if (contextEl) {
+        contextEl.textContent = context && context.type
+          ? 'From ' + context.type.replace(/_/g, ' ')
+          : '';
+      }
+
+      if (barFill && data.progressMs != null && data.durationMs) {
+        var pct = Math.min(100, (data.progressMs / data.durationMs) * 100);
+        barFill.style.width = pct.toFixed(1) + '%';
+      }
     });
   }
 
@@ -341,17 +934,30 @@
     var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(proto + '//' + location.host);
 
+    ws.addEventListener('open', function () {
+      flushClientErrors();
+    });
+
     ws.addEventListener('message', function (evt) {
       try {
         var data = JSON.parse(evt.data);
         if (data.type === 'layout') renderLayout(data.layout);
         if (data.type === 'update') {
-          if (data.temperature) updateTemperature(data.temperature);
-          if (data.cameras)     updateCameras(data.cameras);
-          if (data.stocks)      updateStocks(data.stocks);
-          if (data.headlines)   updateHeadlines(data.headlines);
+          try { if (data.temperature) updateTemperature(data.temperature); } catch (err) { reportClientError('temperature', err.message || 'Update failed'); }
+          try { if (data.cameras) updateCameras(data.cameras); } catch (err) { reportClientError('cameras', err.message || 'Update failed'); }
+          try { if (data.stocks) updateStocks(data.stocks); } catch (err) { reportClientError('stocks', err.message || 'Update failed'); }
+          try { if (data.headlines) updateHeadlines(data.headlines); } catch (err) { reportClientError('news', err.message || 'Update failed'); }
+          try { if (data.iss) updateISS(data.iss); } catch (err) { reportClientError('iss', err.message || 'Update failed'); }
+          try { if (data.sports) updateSports(data.sports); } catch (err) { reportClientError('sports', err.message || 'Update failed'); }
+          try { if (data.spotify) updateNowPlaying(data.spotify); else if (data.nowplaying) updateNowPlaying(data.nowplaying); } catch (err) { reportClientError('spotify', err.message || 'Update failed'); }
         }
-      } catch (_) {}
+      } catch (err) {
+        reportClientError('websocket', 'Bad payload from server', err.message || 'Invalid JSON');
+      }
+    });
+
+    ws.addEventListener('error', function () {
+      reportClientError('websocket', 'Connection error', 'Realtime link failed');
     });
 
     ws.addEventListener('close', function () {
@@ -360,11 +966,24 @@
   }
 
   setInterval(updateClock, 1000);
+  setInterval(refreshCameraAges, 1000);
 
   fetch('/api/layout')
     .then(function (r) { return r.json(); })
     .then(function (layout) { renderLayout(layout); })
-    .catch(function () {});
+    .catch(function (err) {
+      reportClientError('layout', 'Failed to load layout', err && err.message ? err.message : 'Request error');
+    });
+
+  window.addEventListener('error', function (evt) {
+    reportClientError('window', evt.message || 'Unhandled error', evt.filename ? evt.filename + ':' + evt.lineno : '');
+  });
+
+  window.addEventListener('unhandledrejection', function (evt) {
+    var reason = evt.reason;
+    var message = reason && reason.message ? reason.message : String(reason || 'Unhandled promise rejection');
+    reportClientError('promise', message, 'unhandled rejection');
+  });
 
   connect();
 

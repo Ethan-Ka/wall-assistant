@@ -18,6 +18,14 @@
         <label for="rows-input">Rows</label>
         <input type="number" id="rows-input" min="1" max="6" value="2">
       </div>
+      <div class="control-group">
+        <label for="col-sizes-input">Col Widths</label>
+        <input type="text" id="col-sizes-input" value="1, 1" placeholder="1, 2, 1" title="Relative widths, comma-separated (e.g. 2, 1)">
+      </div>
+      <div class="control-group">
+        <label for="row-sizes-input">Row Heights</label>
+        <input type="text" id="row-sizes-input" value="1, 1" placeholder="1, 2" title="Relative heights, comma-separated (e.g. 1, 2)">
+      </div>
       <button class="btn btn-secondary" id="reset-btn">Reset</button>
       <button class="btn btn-primary" id="save-btn">Save Layout</button>
     </div>
@@ -28,7 +36,7 @@
       <div class="grid-editor-wrap">
         <div class="grid-editor" id="grid-editor"></div>
       </div>
-      <p class="admin-hint">Drag cells to swap positions &bull; Click a cell to configure it</p>
+      <p class="admin-hint">Drag to swap &bull; Click to configure &bull; Spanned cells can't be dragged</p>
     </div>
     <aside class="admin-right">
       <h2>Cell Configuration</h2>

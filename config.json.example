@@ -9,8 +9,10 @@
     "accessToken": "",
     "refreshToken": ""
   },
-  "cameras": [
-    { "name": "Front Door", "index": 0 },
-    { "name": "Backyard",   "index": 1 }
-  ]
+    "spotify": {
+    "clientId": "",
+    "clientSecret": "",
+    "accessToken": "",
+    "refreshToken": ""
+  }
 }

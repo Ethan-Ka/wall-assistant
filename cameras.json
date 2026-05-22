@@ -1,0 +1,38 @@
+[
+  {
+    "index": 0,
+    "id": 661761095,
+    "name": "Living Room",
+    "kind": "stickup_cam_mini_v2"
+  },
+  {
+    "index": 1,
+    "id": 650890895,
+    "name": "Shed",
+    "kind": "cocoa_floodlight"
+  },
+  {
+    "index": 2,
+    "id": 50062281,
+    "name": "Side",
+    "kind": "cocoa_camera"
+  },
+  {
+    "index": 3,
+    "id": 54759758,
+    "name": "Backyard",
+    "kind": "cocoa_camera"
+  },
+  {
+    "index": 4,
+    "id": 50058003,
+    "name": "Garage",
+    "kind": "cocoa_camera"
+  },
+  {
+    "index": 5,
+    "id": 50062409,
+    "name": "Front",
+    "kind": "cocoa_camera"
+  }
+]
