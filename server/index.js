@@ -74,6 +74,7 @@ const { getISS }       = require('./iss');
 const { getSports }    = require('./sports');
 const { getNowPlaying } = require('./spotify');
 const { readLayout, writeLayout } = require('./layout');
+const autoUpdate = require('./auto-update');
 
 function color(code, text) {
   return isDashboardEnabled ? `\u001b[${code}m${text}\u001b[0m` : text;
@@ -511,6 +512,7 @@ server.listen(PORT, async () => {
   scheduleRender();
   dashboardState.hlsReady = true;
   scheduleRender();
+  autoUpdate.start();
 });
 
 if (isDashboardEnabled) {
