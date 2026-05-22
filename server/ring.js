@@ -21,6 +21,7 @@ let cameras = [];
 // Per-camera snapshot cache (populated by 30-min scheduler, never fetched on-demand)
 const snapshotBuffers   = {}; // index → Buffer
 const snapshotTimestamp = {}; // index → ISO string of when Ring produced the frame
+const snapshotDropped   = {}; // index → number of failed fetches since server start
 
 // Per-camera motion state
 // { dingId, url, urlFetchedAt (ms), timestamp (ISO) }
@@ -45,7 +46,7 @@ async function doScheduledSnapshot(cam, index) {
     snapshotTimestamp[index] = new Date().toISOString();
     console.log(`[ring] Scheduled snapshot OK — cam ${index} (${cam.name})`);
   } catch (e) {
-    console.warn(`[ring] Scheduled snapshot failed for cam ${index}: ${e.message}`);
+    snapshotDropped[index] = (snapshotDropped[index] || 0) + 1;
   }
 }
 
@@ -152,9 +153,10 @@ async function getMotionClipUrl(cameraIndex) {
 function getCameraList() {
   return cameras.map((cam, index) => ({
     index,
-    id:   cam.id,
-    name: cam.name,
-    kind: cam.deviceType,
+    id:      cam.id,
+    name:    cam.name,
+    kind:    cam.deviceType,
+    dropped: snapshotDropped[index] || 0,
   }));
 }
 

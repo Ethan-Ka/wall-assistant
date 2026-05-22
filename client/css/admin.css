@@ -283,6 +283,141 @@ body {
 .notification.error   { background: #c0392b; color: #fff; }
 .notification.visible { opacity: 1; }
 
+/* ── Import / Export modal ── */
+
+.layout-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 300;
+}
+
+.layout-modal-overlay[hidden] { display: none; }
+
+.layout-modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  width: min(44rem, 92vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.layout-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.layout-modal-header h3 {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.layout-modal-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.2rem;
+}
+
+.layout-modal-close:hover { color: var(--text); }
+
+.layout-modal-hint {
+  padding: 0.65rem 1.25rem 0;
+  font-size: 0.88rem;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.layout-modal-textarea {
+  flex: 1;
+  margin: 0.75rem 1.25rem;
+  padding: 0.75rem;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  color: var(--text);
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  resize: vertical;
+  min-height: 14rem;
+  outline: none;
+}
+
+.layout-modal-textarea:focus { border-color: var(--accent); }
+
+.layout-modal-actions {
+  display: flex;
+  gap: 0.6rem;
+  justify-content: flex-end;
+  padding: 0.75rem 1.25rem 1rem;
+  border-top: 1px solid var(--border);
+}
+
+/* ── Connected Devices panel ── */
+
+.devices-panel {
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border);
+}
+
+.devices-placeholder {
+  color: #444;
+  font-size: 0.88rem;
+  padding: 0.5rem 0;
+}
+
+.device-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid #222;
+  font-size: 0.88rem;
+}
+
+.device-row:last-child { border-bottom: none; }
+
+.device-name {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.device-kind {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.device-dropped {
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+  color: #e05c5c;
+}
+
+.device-dropped.none {
+  color: var(--accent);
+}
+
 /* Span size badge shown on multi-cell widgets */
 .cell-span-badge {
   position: absolute;

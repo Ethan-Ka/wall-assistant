@@ -5,12 +5,14 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
 const CHECK_INTERVAL_MS = 10 * 60 * 1000;
+const IS_WIN = process.platform === 'win32';
+const GIT = IS_WIN ? 'git.cmd' : 'git';
+const NPM = IS_WIN ? 'npm.cmd' : 'npm';
 
 function git(...args) {
-  return execFileSync('git', args, {
+  return execFileSync(GIT, args, {
     cwd: ROOT,
     encoding: 'utf8',
-    shell: process.platform === 'win32',
   }).trim();
 }
 
@@ -47,10 +49,9 @@ function applyUpdate() {
 
   if (pkgJsonChanged()) {
     console.log('[auto-update] package.json changed, running npm install...');
-    execFileSync('npm', ['install'], {
+    execFileSync(NPM, ['install'], {
       cwd: path.join(ROOT, 'server'),
       stdio: 'inherit',
-      shell: process.platform === 'win32',
     });
   }
 

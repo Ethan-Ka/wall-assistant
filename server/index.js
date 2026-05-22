@@ -129,7 +129,8 @@ function getDisplayLines() {
   if (cameraList.length) {
     cameraList.forEach((camera) => {
       const streaming = getHlsUrl(camera.index) ? 'streaming' : 'snapshot';
-      lines.push(`camera ${camera.index}: ${camera.name}  |  ${camera.kind || 'unknown'}  |  ${streaming}`);
+      const dropped = camera.dropped ? `  |  ${camera.dropped} dropped` : '';
+      lines.push(`camera ${camera.index}: ${camera.name}  |  ${camera.kind || 'unknown'}  |  ${streaming}${dropped}`);
     });
   } else {
     lines.push('no Ring cameras detected yet');
@@ -511,6 +512,14 @@ setInterval(async () => {
 setInterval(() => {
   scheduleRender();
 }, 1000);
+
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`Error: Port ${PORT} is already in use. Stop the other process or set a different PORT.`);
+    process.exit(1);
+  }
+  throw err;
+});
 
 server.listen(PORT, async () => {
   console.log(`wall-assistant server running at http://localhost:${PORT}`);

@@ -631,14 +631,122 @@
   document.getElementById('col-sizes-input').addEventListener('change', onSizesChange);
   document.getElementById('row-sizes-input').addEventListener('change', onSizesChange);
 
-  fetch('/api/cameras')
-    .then(function (r) { return r.json(); })
-    .then(function (list) {
-      ringCameras = list;
-      // Re-render config panel in case a camera cell is already selected
-      renderConfigPanel();
-    })
-    .catch(function () {}); // Ring not connected; fallback is the index number
+  // ── Import / Export modal ─────────────────────────────
+
+  var modal         = document.getElementById('layout-modal');
+  var modalTitle    = document.getElementById('modal-title');
+  var modalHint     = document.getElementById('modal-hint');
+  var modalTextarea = document.getElementById('modal-textarea');
+  var modalCopy     = document.getElementById('modal-copy');
+  var modalApply    = document.getElementById('modal-apply');
+  var modalCancel   = document.getElementById('modal-cancel');
+  var modalClose    = document.getElementById('modal-close');
+
+  function openModal(mode) {
+    if (mode === 'export') {
+      modalTitle.textContent = 'Export Layout';
+      modalHint.textContent  = 'Copy the JSON below to save or share this layout.';
+      modalTextarea.value    = JSON.stringify(layout, null, 2);
+      modalTextarea.readOnly = true;
+      modalCopy.hidden  = false;
+      modalApply.hidden = true;
+      modal.hidden = false;
+      modalTextarea.select();
+    } else {
+      modalTitle.textContent = 'Import Layout';
+      modalHint.textContent  = 'Paste a previously exported layout JSON and click Apply.';
+      modalTextarea.value    = '';
+      modalTextarea.readOnly = false;
+      modalCopy.hidden  = true;
+      modalApply.hidden = false;
+      modal.hidden = false;
+      modalTextarea.focus();
+    }
+  }
+
+  function closeModal() { modal.hidden = true; }
+
+  document.getElementById('export-btn').addEventListener('click', function () { openModal('export'); });
+  document.getElementById('import-btn').addEventListener('click', function () { openModal('import'); });
+  modalClose.addEventListener('click', closeModal);
+  modalCancel.addEventListener('click', closeModal);
+  modal.addEventListener('click', function (e) { if (e.target === modal) closeModal(); });
+
+  modalCopy.addEventListener('click', function () {
+    navigator.clipboard.writeText(modalTextarea.value)
+      .then(function () { showNotification('Copied to clipboard', 'success'); closeModal(); })
+      .catch(function () { modalTextarea.select(); showNotification('Select + copy manually', 'error'); });
+  });
+
+  modalApply.addEventListener('click', function () {
+    var raw = modalTextarea.value.trim();
+    var parsed;
+    try { parsed = JSON.parse(raw); } catch (_) {
+      showNotification('Invalid JSON', 'error'); return;
+    }
+    if (!parsed || typeof parsed.grid !== 'object' || !Array.isArray(parsed.slots)) {
+      showNotification('Not a valid layout (needs grid + slots)', 'error'); return;
+    }
+    if (!parsed.grid.colSizes) parsed.grid.colSizes = Array(parsed.grid.cols).fill(1);
+    if (!parsed.grid.rowSizes) parsed.grid.rowSizes = Array(parsed.grid.rows).fill(1);
+    layout = parsed;
+    selectedCell = null;
+    syncControls();
+    renderGrid();
+    renderConfigPanel();
+    closeModal();
+    showNotification('Layout imported — click Save to persist', 'success');
+  });
+
+  function renderDevices(list) {
+    var container = document.getElementById('devices-list');
+    clearEl(container);
+    if (!list || !list.length) {
+      var ph = document.createElement('div');
+      ph.className = 'devices-placeholder';
+      ph.textContent = 'No Ring cameras detected';
+      container.appendChild(ph);
+      return;
+    }
+    list.forEach(function (camera) {
+      var row = document.createElement('div');
+      row.className = 'device-row';
+
+      var name = document.createElement('div');
+      name.className = 'device-name';
+      name.textContent = camera.name || ('Camera ' + camera.index);
+
+      var kind = document.createElement('div');
+      kind.className = 'device-kind';
+      kind.textContent = camera.kind || 'unknown';
+
+      var dropped = document.createElement('div');
+      var count = camera.dropped || 0;
+      dropped.className = 'device-dropped' + (count === 0 ? ' none' : '');
+      dropped.textContent = count + ' dropped';
+
+      row.appendChild(name);
+      row.appendChild(kind);
+      row.appendChild(dropped);
+      container.appendChild(row);
+    });
+  }
+
+  function loadCameras() {
+    fetch('/api/cameras')
+      .then(function (r) { return r.json(); })
+      .then(function (list) {
+        ringCameras = list;
+        renderDevices(list);
+        renderConfigPanel();
+      })
+      .catch(function () {
+        renderDevices([]);
+      });
+  }
+
+  loadCameras();
+  setInterval(loadCameras, 30000);
 
   loadLayout();
 }());
