@@ -1,0 +1,11 @@
+{
+  "latitude": 37.7749,
+  "longitude": -122.4194,
+  "ring": {
+    "refreshToken": ""
+  },
+  "cameras": [
+    { "name": "Front Door", "index": 0 },
+    { "name": "Backyard", "index": 1 }
+  ]
+}

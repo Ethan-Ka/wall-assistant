@@ -1,0 +1,11 @@
+{
+  "name": "Home Dashboard",
+  "short_name": "Home",
+  "display": "standalone",
+  "background_color": "#121212",
+  "theme_color": "#121212",
+  "start_url": "/",
+  "icons": [
+    { "src": "icons/icon-180.png", "sizes": "180x180", "type": "image/png" }
+  ]
+}

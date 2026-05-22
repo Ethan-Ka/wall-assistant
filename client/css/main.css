@@ -1,0 +1,147 @@
+:root {
+  --bg: #121212;
+  --surface: #1e1e1e;
+  --surface2: #282828;
+  --accent: #1db954;
+  --text: #ffffff;
+  --text-muted: #b3b3b3;
+  --radius: 12px;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  overflow: hidden;
+  -webkit-text-size-adjust: 100%;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  height: 100dvh;
+  gap: 10px;
+  padding: 10px;
+  padding-top: max(10px, env(safe-area-inset-top));
+  padding-bottom: max(10px, env(safe-area-inset-bottom));
+}
+
+.card {
+  background: var(--surface);
+  border-radius: var(--radius);
+  overflow: hidden;
+  position: relative;
+}
+
+/* ── Camera cards ── */
+
+.camera-card {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.camera-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #3a3a3a;
+}
+
+.camera-placeholder svg {
+  width: 48px;
+  height: 48px;
+}
+
+.camera-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: none;
+}
+
+.camera-img.loaded {
+  display: block;
+}
+
+.camera-label {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 24px 12px 10px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.72));
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+
+/* ── Temperature card ── */
+
+.temp-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.temp-value {
+  font-size: clamp(3rem, 9vw, 5rem);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -2px;
+  color: var(--text);
+}
+
+.temp-condition {
+  font-size: clamp(0.9rem, 2.5vw, 1.2rem);
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.temp-source {
+  font-size: 0.7rem;
+  color: #555;
+  margin-top: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* ── Clock card ── */
+
+.clock-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.clock-time {
+  font-size: clamp(3rem, 10vw, 5.5rem);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -3px;
+  color: var(--text);
+}
+
+.clock-date {
+  font-size: clamp(0.75rem, 2vw, 1rem);
+  color: var(--text-muted);
+  font-weight: 400;
+}

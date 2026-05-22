@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Home">
+  <!-- Replace icons/icon-180.png with your own 180x180 PNG app icon -->
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="css/main.css">
+  <title>Home</title>
+</head>
+<body>
+  <div class="grid">
+
+    <!-- Camera 0 -->
+    <div class="card camera-card" id="camera-0">
+      <div class="camera-placeholder">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path stroke-linecap="round" stroke-linejoin="round"
+            d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 002.25-2.25v-9A2.25 2.25 0 0013.5 5.25h-9A2.25 2.25 0 002.25 9.75v9A2.25 2.25 0 004.5 18.75z"/>
+        </svg>
+      </div>
+      <img class="camera-img" id="camera-0-img" src="" alt="Camera 0">
+      <div class="camera-label" id="camera-0-name">Front Door</div>
+    </div>
+
+    <!-- Camera 1 -->
+    <div class="card camera-card" id="camera-1">
+      <div class="camera-placeholder">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path stroke-linecap="round" stroke-linejoin="round"
+            d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 002.25-2.25v-9A2.25 2.25 0 0013.5 5.25h-9A2.25 2.25 0 002.25 9.75v9A2.25 2.25 0 004.5 18.75z"/>
+        </svg>
+      </div>
+      <img class="camera-img" id="camera-1-img" src="" alt="Camera 1">
+      <div class="camera-label" id="camera-1-name">Backyard</div>
+    </div>
+
+    <!-- Temperature -->
+    <div class="card temp-card" id="temp-card">
+      <div class="temp-value" id="temp-value">--°</div>
+      <div class="temp-condition" id="temp-condition">Loading…</div>
+      <div class="temp-source">Outdoor</div>
+    </div>
+
+    <!-- Clock -->
+    <div class="card clock-card" id="clock-card">
+      <div class="clock-time" id="clock-time">--:--</div>
+      <div class="clock-date" id="clock-date"></div>
+    </div>
+
+  </div>
+  <script src="js/main.js"></script>
+</body>
+</html>
