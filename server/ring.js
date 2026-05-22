@@ -4,9 +4,12 @@ const path = require('path');
 const fs = require('fs');
 const { RingApi } = require('ring-client-api');
 
-const CONFIG_PATH   = path.join(__dirname, '../config.json');
-const CAMERAS_PATH  = path.join(__dirname, '../cameras.json');
-const SNAPSHOT_CACHE_TTL = 30 * 1000;
+const CONFIG_PATH  = path.join(__dirname, '../config.json');
+const CAMERAS_PATH = path.join(__dirname, '../cameras.json');
+
+const SNAPSHOT_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes between scheduled pulls
+const RECORDING_DELAY_MS   = 25 * 1000;       // wait for Ring to transcode the clip
+const URL_TTL_MS           = 45 * 60 * 1000;  // refresh pre-signed URL before 1hr expiry
 
 const PLACEHOLDER_SNAPSHOT = Buffer.from(
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" role="img" aria-label="Camera unavailable"><rect width="640" height="360" fill="#121417"/><rect x="42" y="42" width="556" height="276" rx="24" fill="#1b2026" stroke="#2b323b" stroke-width="4"/><circle cx="320" cy="180" r="54" fill="none" stroke="#4b5563" stroke-width="10"/><path d="M275 180h90" stroke="#4b5563" stroke-width="10" stroke-linecap="round"/><path d="M320 135v90" stroke="#4b5563" stroke-width="10" stroke-linecap="round"/><text x="320" y="254" fill="#9ca3af" font-family="Arial, sans-serif" font-size="24" text-anchor="middle">Snapshot unavailable</text></svg>',
@@ -14,7 +17,14 @@ const PLACEHOLDER_SNAPSHOT = Buffer.from(
 );
 
 let cameras = [];
-let snapshotCache = {}; // cameraIndex → { buffer, lastUpdated, fetchedAt, pending }
+
+// Per-camera snapshot cache (populated by 30-min scheduler, never fetched on-demand)
+const snapshotBuffers   = {}; // index → Buffer
+const snapshotTimestamp = {}; // index → ISO string of when Ring produced the frame
+
+// Per-camera motion state
+// { dingId, url, urlFetchedAt (ms), timestamp (ISO) }
+const motionClips = {};
 
 function persistToken(token) {
   try {
@@ -28,6 +38,51 @@ function persistToken(token) {
   }
 }
 
+async function doScheduledSnapshot(cam, index) {
+  try {
+    const buffer = await cam.getSnapshot();
+    snapshotBuffers[index]   = buffer;
+    snapshotTimestamp[index] = new Date().toISOString();
+    console.log(`[ring] Scheduled snapshot OK — cam ${index} (${cam.name})`);
+  } catch (e) {
+    console.warn(`[ring] Scheduled snapshot failed for cam ${index}: ${e.message}`);
+  }
+}
+
+function startSnapshotSchedule(cam, index) {
+  doScheduledSnapshot(cam, index); // immediate first shot
+  setInterval(() => doScheduledSnapshot(cam, index), SNAPSHOT_INTERVAL_MS);
+}
+
+function subscribeMotion(cam, index) {
+  cam.subscribeToMotionEvents().catch((e) => {
+    console.warn(`[ring] subscribeToMotionEvents failed for cam ${index}: ${e.message}`);
+  });
+
+  cam.onNewNotification.subscribe((notification) => {
+    if (notification.subtype !== 'motion' && notification.subtype !== 'human') return;
+    const dingId = notification.ding && notification.ding.id;
+    if (!dingId) return;
+    console.log(`[ring] Motion on cam ${index} — ding ${dingId}`);
+
+    // Ring needs time to transcode before the recording URL resolves
+    setTimeout(async () => {
+      try {
+        const url = await cam.getRecordingUrl(String(dingId));
+        motionClips[index] = {
+          dingId:       String(dingId),
+          url,
+          urlFetchedAt: Date.now(),
+          timestamp:    new Date().toISOString(),
+        };
+        console.log(`[ring] Motion clip ready for cam ${index}`);
+      } catch (e) {
+        console.error(`[ring] Failed to fetch recording for cam ${index}: ${e.message}`);
+      }
+    }, RECORDING_DELAY_MS);
+  });
+}
+
 async function initRing(config) {
   const token = config && config.ring && config.ring.refreshToken;
   if (!token) {
@@ -37,7 +92,6 @@ async function initRing(config) {
 
   const api = new RingApi({ refreshToken: token });
 
-  // Rotate and persist whenever ring-client-api refreshes the OAuth token
   api.onRefreshTokenUpdated.subscribe(({ newRefreshToken }) => {
     persistToken(newRefreshToken);
   });
@@ -47,98 +101,58 @@ async function initRing(config) {
     console.log(`[ring] Found ${cameras.length} camera(s):`, cameras.map((c) => c.name).join(', '));
     const list = cameras.map((cam, index) => ({ index, id: cam.id, name: cam.name, kind: cam.deviceType }));
     fs.writeFileSync(CAMERAS_PATH, JSON.stringify(list, null, 2) + '\n', 'utf8');
-    console.log(`[ring] Camera list written to cameras.json`);
+
+    cameras.forEach((cam, index) => {
+      startSnapshotSchedule(cam, index);
+      subscribeMotion(cam, index);
+    });
   } catch (e) {
     console.error('[ring] Failed to fetch cameras:', e.message);
   }
 }
 
-async function getRingSnapshot(cameraIndex) {
+// Sync — reads from cache only; never wakes the camera
+function getRingSnapshot(cameraIndex) {
   const cam = cameras[cameraIndex];
-  const cached = snapshotCache[cameraIndex];
-
-  const stub = {
-    name: cam ? cam.name : `Camera ${cameraIndex}`,
-    snapshotBuffer: null,
-    lastUpdated: new Date().toISOString(),
+  return {
+    name:           cam ? cam.name : `Camera ${cameraIndex}`,
+    snapshotBuffer: snapshotBuffers[cameraIndex] || PLACEHOLDER_SNAPSHOT,
+    isPlaceholder:  !snapshotBuffers[cameraIndex],
+    lastUpdated:    snapshotTimestamp[cameraIndex] || null,
   };
-
-  if (!cam) return stub;
-
-  if (cached && cached.buffer && Date.now() - cached.fetchedAt < SNAPSHOT_CACHE_TTL) {
-    return {
-      name: cam.name,
-      snapshotBuffer: cached.buffer,
-      lastUpdated: cached.lastUpdated,
-    };
-  }
-
-  if (cached && cached.pending) {
-    return cached.pending;
-  }
-
-  const pending = (async () => {
-    try {
-      const buffer = await cam.getSnapshot();
-      const lastUpdated = new Date().toISOString();
-      snapshotCache[cameraIndex] = {
-        buffer,
-        lastUpdated,
-        fetchedAt: Date.now(),
-        pending: null,
-      };
-      return {
-        name: cam.name,
-        snapshotBuffer: buffer,
-        lastUpdated,
-      };
-    } catch (e) {
-      const entry = snapshotCache[cameraIndex];
-      if (entry && entry.buffer) {
-        return {
-          name: cam.name,
-          snapshotBuffer: entry.buffer,
-          lastUpdated: entry.lastUpdated,
-        };
-      }
-
-      console.error(`[ring] Snapshot failed for camera ${cameraIndex}:`, e.message);
-      return stub;
-    } finally {
-      const entry = snapshotCache[cameraIndex];
-      if (entry && entry.pending === pending) {
-        entry.pending = null;
-      }
-    }
-  })();
-
-  snapshotCache[cameraIndex] = {
-    buffer: cached ? cached.buffer : null,
-    lastUpdated: cached ? cached.lastUpdated : null,
-    fetchedAt: cached ? cached.fetchedAt : 0,
-    pending,
-  };
-
-  return pending;
 }
 
-function getCachedRingSnapshot(cameraIndex) {
-  const cam = cameras[cameraIndex];
-  const cached = snapshotCache[cameraIndex];
-  const snapshotBuffer = (cached && cached.buffer) || PLACEHOLDER_SNAPSHOT;
+// Returns the motion clip URL only when motion has occurred since the last snapshot.
+// Transparently refreshes the pre-signed S3 URL before the 1-hr expiry.
+async function getMotionClipUrl(cameraIndex) {
+  const clip = motionClips[cameraIndex];
+  if (!clip) return null;
 
-  return {
-    name: cam ? cam.name : `Camera ${cameraIndex}`,
-    snapshotBuffer,
-    isPlaceholder: !cached || !cached.buffer,
-    lastUpdated: cached ? cached.lastUpdated : null,
-  };
+  // Discard if this clip predates the most recent scheduled snapshot
+  const snapTime = snapshotTimestamp[cameraIndex];
+  if (snapTime && new Date(clip.timestamp) <= new Date(snapTime)) return null;
+
+  // Refresh the URL when it's approaching expiry
+  if (Date.now() - clip.urlFetchedAt > URL_TTL_MS) {
+    const cam = cameras[cameraIndex];
+    if (cam) {
+      try {
+        clip.url          = await cam.getRecordingUrl(clip.dingId);
+        clip.urlFetchedAt = Date.now();
+      } catch (e) {
+        console.error(`[ring] Failed to refresh clip URL for cam ${cameraIndex}: ${e.message}`);
+        return null;
+      }
+    }
+  }
+
+  return clip.url;
 }
 
 function getCameraList() {
   return cameras.map((cam, index) => ({
     index,
-    id: cam.id,
+    id:   cam.id,
     name: cam.name,
     kind: cam.deviceType,
   }));
@@ -148,4 +162,4 @@ function getCameras() {
   return cameras;
 }
 
-module.exports = { initRing, getRingSnapshot, getCachedRingSnapshot, getCameraList, getCameras };
+module.exports = { initRing, getRingSnapshot, getMotionClipUrl, getCameraList, getCameras };

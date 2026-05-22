@@ -14,8 +14,8 @@ html {
 }
 
 html.ios-safari-older {
-  font-size: 19px;
-  font-size: clamp(17px, 1.2vw + 0.8vh, 22px);
+  font-size: 16px;
+  font-size: clamp(14px, 1.0vw + 0.65vh, 18px);
 }
 
 *, *::before, *::after {
@@ -76,6 +76,7 @@ html, body {
   align-items: center;
   justify-content: center;
   color: #3a3a3a;
+  pointer-events: none;
 }
 
 .camera-placeholder svg {
@@ -90,6 +91,7 @@ html, body {
   height: 100%;
   object-fit: cover;
   display: none;
+  pointer-events: none;
 }
 
 .camera-img.loaded {
@@ -103,6 +105,7 @@ html, body {
   height: 100%;
   object-fit: cover;
   display: none;
+  pointer-events: none;
 }
 
 .camera-video.active {
@@ -146,6 +149,7 @@ html, body {
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--text);
+  pointer-events: none;
 }
 
 .camera-label-name {
@@ -314,21 +318,23 @@ html, body {
 .camera-expand-overlay {
   display: none;
   position: fixed;
-  inset: 0;
-  z-index: 100;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 9999;
   background: #000;
-  align-items: center;
-  justify-content: center;
-  touch-action: none;
-  overscroll-behavior: none;
 }
 
 .camera-expand-overlay.active {
-  display: flex;
+  display: block;
 }
 
 .camera-expand-img,
 .camera-expand-video {
+  position: absolute;
+  top: 0;
+  left: 0;
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -342,21 +348,121 @@ html, body {
   display: block;
 }
 
+.camera-expand-status {
+  display: none;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.camera-expand-status.visible {
+  display: block;
+}
+
 .camera-expand-label {
   position: absolute;
   bottom: 0;
   left: 0;
-  right: 0;
-  padding: 2rem 1rem max(1rem, env(safe-area-inset-bottom));
+  width: 100%;
+  padding: 2rem 1rem 1rem;
   background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
   font-size: 1rem;
   font-weight: 600;
   color: var(--text);
 }
 
+.camera-expand-label .camera-label-name {
+  font-size: 1.05rem;
+  line-height: 1.2;
+}
+
+.camera-expand-label .camera-label-age {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.camera-idle-prompt {
+  display: none;
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+.camera-idle-prompt.active {
+  display: flex;
+}
+
+.camera-idle-box {
+  background: rgba(30, 30, 30, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 1rem;
+  padding: 1.75rem 2rem;
+  text-align: center;
+  max-width: 280px;
+  width: 100%;
+}
+
+.camera-idle-text {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 1.25rem;
+}
+
+.camera-idle-btn {
+  display: block;
+  width: 100%;
+  padding: 0.65rem 1.25rem;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 0.5rem;
+  color: var(--text);
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+  margin-bottom: 1rem;
+  transition: background 0.15s;
+}
+
+.camera-idle-btn:active {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.camera-idle-bar {
+  height: 3px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.camera-idle-bar-fill {
+  height: 100%;
+  width: 100%;
+  background: rgba(255, 255, 255, 0.55);
+  border-radius: 999px;
+  transform-origin: left;
+  transition: width 1s linear;
+}
+
 .camera-expand-close {
   position: absolute;
-  top: max(1rem, env(safe-area-inset-top));
+  top: 1rem;
   right: 1rem;
   width: 2.25rem;
   height: 2.25rem;
@@ -365,9 +471,8 @@ html, body {
   border: none;
   color: var(--text);
   font-size: 1rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  line-height: 2.25rem;
+  text-align: center;
   cursor: pointer;
   touch-action: manipulation;
 }
@@ -666,6 +771,7 @@ html, body {
   gap: 1rem;
   padding: 1rem 1.05rem;
   cursor: default;
+  
 }
 
 .nowplaying-art {
@@ -676,6 +782,8 @@ html, body {
   border-radius: 0.5rem;
   flex-shrink: 0;
   object-fit: cover;
+  
+  
 }
 
 .nowplaying-art-placeholder {
@@ -685,6 +793,7 @@ html, body {
   justify-content: center;
   font-size: clamp(1.7rem, 4.8vw, 2.5rem);
   color: #333;
+
 }
 
 .nowplaying-info {
@@ -718,25 +827,28 @@ html, body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  
 }
 
 html.ios-safari-older .nowplaying-card {
-  gap: 0.85rem;
-  padding: 0.9rem 0.95rem;
+  gap: 0.7rem;
+  padding: 0.75rem 0.8rem;
+  
 }
 
 html.ios-safari-older .nowplaying-art {
-  width: clamp(64px, 20%, 98px);
-  min-width: 64px;
-  max-width: 98px;
+  width: clamp(52px, 16%, 78px);
+  min-width: 52px;
+  max-width: 108px;
 }
 
 html.ios-safari-older .nowplaying-art-placeholder {
-  font-size: clamp(1.5rem, 4.2vw, 2rem);
+  font-size: clamp(1.2rem, 3.5vw, 1.7rem);
+
 }
 
 html.ios-safari-older .nowplaying-info {
-  gap: 0.22rem;
+  gap: 0.18rem;
 }
 
 @supports not (font-size: clamp(1rem, 2vw, 3rem)) {

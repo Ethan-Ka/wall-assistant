@@ -23,6 +23,7 @@
   var slotsByType = {}; // type -> first slot of that type
   var pendingClientErrors = [];
   var maxPendingClientErrors = 8;
+  var droppedSnapshots = 0;
 
   // ── Grid rendering ────────────────────────────────────
 
@@ -71,54 +72,14 @@
   }
 
   function bindTap(node, handler) {
-    var touchStartX = 0;
-    var touchStartY = 0;
-    var touchMoved = false;
-    var suppressClick = false;
-
-    function fireTap(e) {
-      suppressClick = true;
-      window.setTimeout(function () { suppressClick = false; }, 400);
-      handler(e);
-    }
-
-    node.addEventListener('pointerup', function (e) {
-      if (e.pointerType === 'mouse' && e.button !== 0) return;
-      if (touchMoved) return;
-      fireTap(e);
-    });
-
-    node.addEventListener('touchstart', function (e) {
-      if (e.touches.length !== 1) return;
-      var touch = e.touches[0];
-      touchStartX = touch.clientX;
-      touchStartY = touch.clientY;
-      touchMoved = false;
-    }, { passive: true });
-
-    node.addEventListener('touchmove', function (e) {
-      if (e.touches.length !== 1) {
-        touchMoved = true;
-        return;
-      }
-      var touch = e.touches[0];
-      if (Math.abs(touch.clientX - touchStartX) > 12 || Math.abs(touch.clientY - touchStartY) > 12) {
-        touchMoved = true;
-      }
-    }, { passive: true });
-
-    node.addEventListener('touchend', function (e) {
-      if (touchMoved) return;
-      e.preventDefault();
-      fireTap(e);
-    }, { passive: false });
-
-    node.addEventListener('click', function (e) {
-      if (suppressClick) {
-        e.preventDefault();
-        return;
-      }
-      handler(e);
+    var moved = false;
+    node.addEventListener('touchstart', function () { moved = false; }, { passive: true });
+    node.addEventListener('touchmove', function () { moved = true; },  { passive: true });
+    // click fires immediately on iOS when user-scalable=no (no 300ms delay),
+    // and is unaffected by touch-action — more reliable than touchend on iOS 17.
+    node.addEventListener('click', function () {
+      if (moved) { moved = false; return; }
+      handler();
     });
   }
 
@@ -184,7 +145,7 @@
       img.src = '';
       img.alt = (slot.config && slot.config.name) || 'Camera';
       img.addEventListener('error', function () {
-        reportClientError('camera', 'Snapshot failed to load', (slot.config && slot.config.name) || slot.id);
+        droppedSnapshots++;
       });
 
       var video = el('video', 'camera-video');
@@ -202,7 +163,7 @@
       card.appendChild(img);
       card.appendChild(video);
       card.appendChild(label);
-      bindTap(card, function () { openCameraExpand(slot.id); });
+      card.onclick = function () { openCameraExpand(slot.id); };
 
     } else if (slot.type === 'temperature') {
       card.classList.add('temp-card');
@@ -388,15 +349,23 @@
   // ── Camera expand overlay ─────────────────────────────
 
   // keyed by slotId — populated by updateCameras
-  // { mode: 'snapshot'|'hls', url, hlsUrl, sessionId, name }
+  // { camIndex, name, lastUpdated, url (snapshot), motionClipUrl }
   var cameraData = {};
 
-  var overlay      = document.getElementById('camera-overlay');
-  var overlayImg   = document.getElementById('camera-overlay-img');
-  var overlayVideo = document.getElementById('camera-overlay-video');
-  var overlayLbl   = document.getElementById('camera-overlay-label');
+  var overlay       = document.getElementById('camera-overlay');
+  var overlayImg    = document.getElementById('camera-overlay-img');
+  var overlayVideo  = document.getElementById('camera-overlay-video');
+  var overlayStatus = document.getElementById('camera-overlay-status');
+  var overlayLbl    = document.getElementById('camera-overlay-label');
   var bodyScrollLock = null;
   var currentOverlaySlotId = null;
+
+  var streamStartTime   = null;  // set when HLS stream is live; null otherwise
+  var idleTimeoutId     = null;  // fires after IDLE_MS of no activity
+  var idleCountdownId   = null;  // fires to auto-close after prompt appears
+  var idleCountdownSecs = 0;     // remaining seconds shown on the bar
+  var IDLE_MS           = 2 * 60 * 1000; // 2 minutes
+  var IDLE_COUNTDOWN_S  = 30;            // seconds before auto-close
 
   function lockBodyScroll() {
     if (bodyScrollLock) return;
@@ -437,33 +406,110 @@
     window.scrollTo(0, state.scrollY);
   }
 
+  function formatStreamDuration() {
+    if (!streamStartTime) return '';
+    var secs = Math.floor((Date.now() - streamStartTime) / 1000);
+    var m = Math.floor(secs / 60);
+    var s = secs % 60;
+    return 'Live · ' + m + ':' + String(s).padStart(2, '0');
+  }
+
+  function showIdlePrompt() {
+    var prompt = document.getElementById('camera-idle-prompt');
+    var fill   = document.getElementById('camera-idle-bar-fill');
+    idleCountdownSecs = IDLE_COUNTDOWN_S;
+    if (fill) fill.style.width = '100%';
+    prompt.classList.add('active');
+
+    // Decrement the bar every second; auto-close when it hits zero
+    idleCountdownId = setInterval(function () {
+      idleCountdownSecs--;
+      if (fill) fill.style.width = Math.max(0, (idleCountdownSecs / IDLE_COUNTDOWN_S) * 100) + '%';
+      if (idleCountdownSecs <= 0) {
+        clearInterval(idleCountdownId);
+        idleCountdownId = null;
+        closeCameraExpand();
+      }
+    }, 1000);
+  }
+
+  function hideIdlePrompt() {
+    if (idleCountdownId) { clearInterval(idleCountdownId); idleCountdownId = null; }
+    var prompt = document.getElementById('camera-idle-prompt');
+    prompt.classList.remove('active');
+    var fill = document.getElementById('camera-idle-bar-fill');
+    if (fill) fill.style.width = '100%';
+  }
+
+  function resetIdleTimer() {
+    hideIdlePrompt();
+    clearTimeout(idleTimeoutId);
+    if (overlay.classList.contains('active')) {
+      idleTimeoutId = setTimeout(showIdlePrompt, IDLE_MS);
+    }
+  }
+
   function openCameraExpand(slotId) {
     var data = cameraData[slotId];
     if (!data) return;
     currentOverlaySlotId = slotId;
+    streamStartTime = null;
     updateCameraLabel(overlayLbl, data);
-    if (data.mode === 'hls' && data.hlsUrl) {
-      overlayImg.style.display = 'none';
-      overlayVideo.classList.add('active');
-      attachHls(overlayVideo, data.hlsUrl);
-    } else if (data.url) {
-      overlayVideo.classList.remove('active');
-      detachHls(overlayVideo);
+
+    // Show snapshot immediately as background while stream starts
+    overlayVideo.classList.remove('active');
+    detachHls(overlayVideo);
+    if (data.url) {
       overlayImg.style.display = '';
       overlayImg.src = data.url;
+    } else {
+      overlayImg.style.display = 'none';
     }
-    lockBodyScroll();
+
+    overlayStatus.textContent = 'Starting stream…';
+    overlayStatus.classList.add('visible');
+
     overlay.classList.add('active');
+    resetIdleTimer();
+
+    var camIndex = data.camIndex;
+    fetch('/api/stream/' + camIndex + '/start', { method: 'POST' })
+      .then(function (r) { return r.json(); })
+      .then(function (result) {
+        // Check the overlay is still open for this same camera
+        if (currentOverlaySlotId !== slotId) return;
+        overlayStatus.classList.remove('visible');
+        if (result.hlsUrl) {
+          overlayImg.style.display = 'none';
+          overlayVideo.classList.add('active');
+          attachHls(overlayVideo, result.hlsUrl);
+          streamStartTime = Date.now();
+        }
+        // On timeout/error, snapshot remains visible as fallback
+      })
+      .catch(function () {
+        if (currentOverlaySlotId === slotId) overlayStatus.classList.remove('visible');
+      });
   }
 
   function closeCameraExpand() {
+    var closingSlotId = currentOverlaySlotId;
+    hideIdlePrompt();
+    clearTimeout(idleTimeoutId);
+    idleTimeoutId = null;
+    streamStartTime = null;
     overlay.classList.remove('active');
-    // Stop the overlay video when dismissed to free resources
     overlayVideo.classList.remove('active');
     detachHls(overlayVideo);
     overlayImg.style.display = '';
+    overlayStatus.classList.remove('visible');
     currentOverlaySlotId = null;
-    unlockBodyScroll();
+
+    // Stop the live stream to save battery
+    if (closingSlotId && cameraData[closingSlotId]) {
+      var camIdx = cameraData[closingSlotId].camIndex;
+      fetch('/api/stream/' + camIdx + '/stop', { method: 'POST' }).catch(function () {});
+    }
   }
 
   function formatCameraAge(updatedAt) {
@@ -479,9 +525,9 @@
     return Math.floor(seconds / 60) + 'm ago';
   }
 
-  function updateCameraLabel(labelEl, data) {
+  function updateCameraLabel(labelEl, data, ageOverride) {
     if (!labelEl || !data) return;
-    var ageText = formatCameraAge(data.lastUpdated);
+    var ageText = ageOverride !== undefined ? ageOverride : formatCameraAge(data.lastUpdated);
     while (labelEl.firstChild) labelEl.removeChild(labelEl.firstChild);
 
     var nameEl = el('span', 'camera-label-name');
@@ -505,18 +551,23 @@
     });
 
     if (currentOverlaySlotId && overlay.classList.contains('active')) {
-      updateCameraLabel(overlayLbl, cameraData[currentOverlaySlotId]);
+      var ageOverride = streamStartTime ? formatStreamDuration() : undefined;
+      updateCameraLabel(overlayLbl, cameraData[currentOverlaySlotId], ageOverride);
     }
   }
 
-  overlay.addEventListener('touchmove', function (e) {
-    e.preventDefault();
-  }, { passive: false });
-  bindTap(overlay, closeCameraExpand);
-  bindTap(document.getElementById('camera-overlay-close'), function (e) {
+  overlay.onclick = function () { closeCameraExpand(); };
+  document.getElementById('camera-overlay-close').onclick = function (e) {
     e.stopPropagation();
     closeCameraExpand();
-  });
+  };
+  document.getElementById('camera-idle-yes').onclick = function (e) {
+    e.stopPropagation();
+    resetIdleTimer();
+  };
+  // Any interaction resets the idle timer while the overlay is open
+  document.addEventListener('click',      function () { if (currentOverlaySlotId) resetIdleTimer(); });
+  document.addEventListener('touchstart', function () { if (currentOverlaySlotId) resetIdleTimer(); }, { passive: true });
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') closeCameraExpand();
   });
@@ -710,44 +761,57 @@
       if (!card) return;
       var img    = card.querySelector('.camera-img');
       var vid    = card.querySelector('.camera-video');
-      var nameEl = card.querySelector('.camera-label');
-      if (cam.name && nameEl) nameEl.textContent = cam.name;
+      var labelEl = card.querySelector('.camera-label');
 
-      if (cam.offline) {
-        // ── Offline ───────────────────────────────────────
-        card.classList.add('camera-offline');
-        if (vid) { vid.classList.remove('active'); detachHls(vid); }
-        if (img) { img.classList.remove('loaded'); }
-        cameraData[slotId] = { mode: 'offline', name: cam.name || slotId, lastUpdated: cam.lastUpdated || null };
+      var prev = cameraData[slotId] || {};
 
-      } else if (cam.hlsUrl) {
-        // ── HLS mode ──────────────────────────────────────
-        // Parse the session ID from the ?s= query param so we only reload
-        // video.src on an actual stream restart, not every 5s WS tick.
+      // Always keep cameraData current so the expand overlay has an up-to-date snapshot URL
+      cameraData[slotId] = {
+        camIndex:      cam.camIndex != null ? cam.camIndex : (prev.camIndex != null ? prev.camIndex : 0),
+        name:          cam.name || prev.name || slotId,
+        lastUpdated:   cam.snapshotAge || prev.lastUpdated || null,
+        url:           cam.snapshotUrl || prev.url || null,
+        motionClipUrl: cam.motionClipUrl || null,
+      };
+
+      if (cam.motionClipUrl) {
+        // ── Motion clip mode: loop the recording until next scheduled snapshot ──
         card.classList.remove('camera-offline');
-        var newSid;
-        try { newSid = new URL(cam.hlsUrl, location.href).searchParams.get('s'); } catch (_) {}
-        var prev = cameraData[slotId];
-        if (vid && (!prev || prev.sessionId !== newSid)) {
-          attachHls(vid, cam.hlsUrl);
+        if (img) { img.style.display = 'none'; img.classList.remove('loaded'); }
+        if (vid) {
+          // Compare against previous stored URL, not vid.src (which is always absolute)
+          if (prev.motionClipUrl !== cam.motionClipUrl) {
+            vid.src  = cam.motionClipUrl;
+            vid.loop = true;
+            vid.play().catch(function () {});
+          }
           vid.classList.add('active');
         }
-        if (img) { img.style.display = 'none'; img.classList.remove('loaded'); }
-        cameraData[slotId] = { mode: 'hls', hlsUrl: cam.hlsUrl, sessionId: newSid, name: cam.name || slotId, lastUpdated: cam.lastUpdated || null };
 
       } else if (cam.snapshotUrl) {
-        // ── Snapshot mode ─────────────────────────────────
+        // ── Snapshot mode: show the 30-min cached frame ──
         card.classList.remove('camera-offline');
-        if (vid) { vid.classList.remove('active'); detachHls(vid); }
+        if (vid && prev.motionClipUrl) {
+          // Motion clip was playing — clear it
+          vid.classList.remove('active');
+          vid.src = '';
+          vid.load();
+        }
         if (img) {
           img.style.display = '';
-          img.src = cam.snapshotUrl;
+          // Compare payload URLs (both relative) to avoid constant re-assignment
+          if (prev.url !== cam.snapshotUrl) img.src = cam.snapshotUrl;
           img.classList.add('loaded');
         }
-        cameraData[slotId] = { mode: 'snapshot', url: cam.snapshotUrl, name: cam.name || slotId, lastUpdated: cam.lastUpdated || null };
+
+      } else {
+        // ── No data yet (initial load, placeholder SVG served by server) ──
+        card.classList.remove('camera-offline');
+        if (vid) { vid.classList.remove('active'); }
+        if (img) { img.classList.remove('loaded'); }
       }
 
-      updateCameraLabel(nameEl, cameraData[slotId]);
+      updateCameraLabel(labelEl, cameraData[slotId]);
     });
 
     refreshCameraAges();
@@ -967,6 +1031,12 @@
 
   setInterval(updateClock, 1000);
   setInterval(refreshCameraAges, 1000);
+  setInterval(function () {
+    if (droppedSnapshots > 0) {
+      reportClientError('camera', 'Snapshots dropped', droppedSnapshots + ' in last 60s');
+      droppedSnapshots = 0;
+    }
+  }, 60000);
 
   fetch('/api/layout')
     .then(function (r) { return r.json(); })

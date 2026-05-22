@@ -7,9 +7,11 @@ const os   = require('os');
 const HLS_BASE   = path.join(os.tmpdir(), 'wall-assistant-hls');
 const RESTART_MS = 5000;
 
-// Per-camera state
-const sessionIds = {};   // index → string timestamp while live, null while starting
-const hlsCamSet  = new Set();
+const sessionIds      = {};  // index → timestamp string while live, null while starting
+const activeSessions  = {};  // index → StreamingSession
+const inFlightStarts  = new Set(); // index is present while cam.streamVideo() is connecting
+const manualStops     = new Set();
+const pendingRestarts = {};  // index → setTimeout id
 
 function camDir(index) {
   return path.join(HLS_BASE, `cam-${index}`);
@@ -26,16 +28,28 @@ function cleanDir(dir) {
 }
 
 async function startStream(cam, index) {
+  // Idempotency: don't double-start a live or connecting session
+  if (activeSessions[index] || inFlightStarts.has(index)) return;
+
+  manualStops.delete(index);
+  inFlightStarts.add(index);
+
+  // Cancel any pending auto-restart so we don't spawn a second stream
+  if (pendingRestarts[index]) {
+    clearTimeout(pendingRestarts[index]);
+    delete pendingRestarts[index];
+  }
+
   const dir = camDir(index);
   fs.mkdirSync(dir, { recursive: true });
   cleanDir(dir);
-  sessionIds[index] = null;
+  sessionIds[index] = null; // signal "connecting"
 
   try {
     const session = await cam.streamVideo({
       output: [
-        '-c:v', 'copy',   // remux H.264 directly — no re-encode
-        '-an',            // no audio (wall display, saves CPU and avoids AAC transcode)
+        '-c:v', 'copy',
+        '-an',
         '-f', 'hls',
         '-hls_time', '2',
         '-hls_list_size', '4',
@@ -46,43 +60,72 @@ async function startStream(cam, index) {
       ],
     });
 
-    // Session ID changes on every restart so the client can detect it
+    inFlightStarts.delete(index);
+
+    // If stopStream was called while streamVideo was connecting, honour it now
+    if (manualStops.has(index)) {
+      manualStops.delete(index);
+      try { session.stop(); } catch (_) {}
+      delete activeSessions[index];
+      sessionIds[index] = null;
+      return;
+    }
+
+    activeSessions[index] = session;
     sessionIds[index] = String(Date.now());
     console.log(`[hls] cam ${index} (${cam.name}) started — session ${sessionIds[index]}`);
 
     session.onCallEnded.subscribe(() => {
-      console.log(`[hls] cam ${index} call ended, restarting in ${RESTART_MS}ms`);
+      delete activeSessions[index];
       sessionIds[index] = null;
-      setTimeout(() => startStream(cam, index), RESTART_MS);
+      console.log(`[hls] cam ${index} call ended`);
+      if (!manualStops.has(index)) {
+        // Auto-restart on unexpected drop (e.g., Ring closed the call)
+        pendingRestarts[index] = setTimeout(() => {
+          delete pendingRestarts[index];
+          if (!manualStops.has(index)) startStream(cam, index);
+        }, RESTART_MS);
+      }
+      manualStops.delete(index);
     });
   } catch (e) {
-    console.error(`[hls] cam ${index} failed to start:`, e.message);
-    setTimeout(() => startStream(cam, index), RESTART_MS * 2);
+    inFlightStarts.delete(index);
+    console.error(`[hls] cam ${index} failed to start: ${e.message}`);
+    delete activeSessions[index];
+    sessionIds[index] = null;
+    if (!manualStops.has(index)) {
+      pendingRestarts[index] = setTimeout(() => {
+        delete pendingRestarts[index];
+        if (!manualStops.has(index)) startStream(cam, index);
+      }, RESTART_MS * 2);
+    }
+    manualStops.delete(index);
   }
 }
 
-function initHls(rawCameras, config) {
+function stopStream(index) {
+  manualStops.add(index);
+
+  if (pendingRestarts[index]) {
+    clearTimeout(pendingRestarts[index]);
+    delete pendingRestarts[index];
+  }
+
+  const session = activeSessions[index];
+  if (session) {
+    try { session.stop(); } catch (_) {}
+    delete activeSessions[index];
+  }
+
+  sessionIds[index] = null;
+  cleanDir(camDir(index));
+  console.log(`[hls] cam ${index} stream stopped`);
+}
+
+function initHls() {
   fs.mkdirSync(HLS_BASE, { recursive: true });
-  const camCfgs = (config && config.cameras) || [];
-  let count = 0;
-  rawCameras.forEach((cam, index) => {
-    const cfg = camCfgs.find((c) => c.index === index);
-    if (cfg && cfg.stream === 'hls') {
-      hlsCamSet.add(index);
-      count++;
-      startStream(cam, index);
-    }
-  });
-  if (count > 0) console.log(`[hls] HLS streaming enabled for ${count} camera(s)`);
 }
 
-function isHlsCamera(index) {
-  return hlsCamSet.has(index);
-}
-
-// Returns the HLS manifest URL with a session-ID query param.
-// Session ID only changes on stream restart, so the client can detect restarts
-// and only then re-assign video.src (avoiding a reload flash every 5s tick).
 function getHlsUrl(index) {
   const sid = sessionIds[index];
   if (!sid) return null;
@@ -98,4 +141,4 @@ function getHlsDir(index) {
   return camDir(index);
 }
 
-module.exports = { initHls, isHlsCamera, getHlsUrl, getHlsDir };
+module.exports = { initHls, startStream, stopStream, getHlsUrl, getHlsDir };

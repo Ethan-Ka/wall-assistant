@@ -64,8 +64,8 @@ console.info = (...args) => pushLog('log', args);
 console.warn = (...args) => pushLog('warn', args);
 console.error = (...args) => pushLog('error', args);
 
-const { initRing, getRingSnapshot, getCachedRingSnapshot, getCameraList, getCameras } = require('./ring');
-const { initHls, isHlsCamera, getHlsUrl, getHlsDir } = require('./hls');
+const { initRing, getRingSnapshot, getMotionClipUrl, getCameraList, getCameras } = require('./ring');
+const { initHls, startStream, stopStream, getHlsUrl, getHlsDir } = require('./hls');
 const { initEcobee } = require('./ecobee');
 const { getTemperature } = require('./temperature');
 const { getStocks }    = require('./stocks');
@@ -93,7 +93,6 @@ function padRight(text, width) {
 function getDisplayLines() {
   const layout = currentLayout || { grid: { cols: 0, rows: 0 }, slots: [] };
   const cameraList = getCameraList();
-  const hlsCount = cameraList.filter((cam) => isHlsCamera(cam.index)).length;
   const wsCount = wss ? wss.clients.size : 0;
   const uptimeSeconds = Math.floor((Date.now() - dashboardState.startedAt.getTime()) / 1000);
   const lastPayload = dashboardState.lastPayloadAt
@@ -106,7 +105,7 @@ function getDisplayLines() {
   const lines = [];
   lines.push(color('1;36', 'wall-assistant server'));
   lines.push(`http://localhost:${PORT}  |  uptime ${uptimeSeconds}s  |  ws clients ${wsCount}`);
-  lines.push(`ring ${dashboardState.ringReady ? 'ready' : 'starting'}  |  ecobee ${dashboardState.ecobeeReady ? 'ready' : 'starting'}  |  hls ${dashboardState.hlsReady ? `${hlsCount} active` : 'starting'}`);
+  lines.push(`ring ${dashboardState.ringReady ? 'ready' : 'starting'}  |  ecobee ${dashboardState.ecobeeReady ? 'ready' : 'starting'}  |  hls on-demand`);
   lines.push(`layout ${layout.slots.length} slots (${layout.grid.cols}x${layout.grid.rows})  |  last payload ${lastPayload}  |  last client event ${lastEvent}`);
   if (dashboardState.lastPayloadError) {
     lines.push(color('1;31', `payload status: ${dashboardState.lastPayloadError}`));
@@ -115,8 +114,8 @@ function getDisplayLines() {
   lines.push(color('1;33', 'connected devices'));
   if (cameraList.length) {
     cameraList.forEach((camera) => {
-      const hlsState = isHlsCamera(camera.index) ? 'hls' : 'snapshot';
-      lines.push(`camera ${camera.index}: ${camera.name}  |  ${camera.kind || 'unknown'}  |  ${hlsState}`);
+      const streaming = getHlsUrl(camera.index) ? 'streaming' : 'snapshot';
+      lines.push(`camera ${camera.index}: ${camera.name}  |  ${camera.kind || 'unknown'}  |  ${streaming}`);
     });
   } else {
     lines.push('no Ring cameras detected yet');
@@ -292,27 +291,59 @@ app.get('/api/hls/:index/:file', (req, res) => {
   res.sendFile(file, {
     root: getHlsDir(index),
     headers: { 'Cache-Control': cacheHeader },
+  }, (err) => {
+    if (err && !res.headersSent) res.status(404).end();
   });
 });
 
-// Serve camera snapshots as JPEG so the browser can cache by timestamp
-app.get('/api/snapshot/:index', async (req, res) => {
+// Serve camera snapshots as JPEG (or SVG placeholder) so the browser can cache by timestamp
+app.get('/api/snapshot/:index', (req, res) => {
   const index = parseInt(req.params.index, 10);
   const cameraCount = getCameraList().length;
   if (isNaN(index) || index < 0 || (cameraCount > 0 && index >= cameraCount)) return res.status(400).end();
 
-  const snap = getCachedRingSnapshot(index);
+  const snap = getRingSnapshot(index);
   res.set('Content-Type', snap.isPlaceholder ? 'image/svg+xml; charset=utf-8' : 'image/jpeg');
   res.set('Cache-Control', 'no-store');
   if (snap.lastUpdated) res.set('X-Snapshot-Timestamp', snap.lastUpdated);
   res.send(snap.snapshotBuffer);
 });
 
+// On-demand live stream: starts HLS for the requested camera, waits up to 15s for
+// the first manifest to appear, then returns the URL. Idempotent — if the stream
+// is already running the existing URL is returned immediately.
+app.post('/api/stream/:index/start', async (req, res) => {
+  const index = parseInt(req.params.index, 10);
+  const camList = getCameras();
+  if (isNaN(index) || index < 0 || index >= camList.length) {
+    return res.status(404).json({ error: 'Camera not found' });
+  }
+
+  const existingUrl = getHlsUrl(index);
+  if (existingUrl) return res.json({ hlsUrl: existingUrl });
+
+  startStream(camList[index], index); // fire; don't await
+
+  for (let i = 0; i < 30; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    const url = getHlsUrl(index);
+    if (url) return res.json({ hlsUrl: url });
+  }
+
+  res.status(504).json({ error: 'Stream did not become ready in time' });
+});
+
+app.post('/api/stream/:index/stop', (req, res) => {
+  const index = parseInt(req.params.index, 10);
+  if (!isNaN(index) && index >= 0) stopStream(index);
+  res.json({ ok: true });
+});
+
 const server = http.createServer(app);
 
 const wss = new WebSocket.Server({
   server,
-  maxPayload: 4 * 1024, // 4 KB — layouts are a few hundred bytes
+  maxPayload: 16 * 1024, // 16 KB — motion clip URLs add ~500 bytes per camera
   verifyClient({ origin, req }) {
     // No Origin header = same-host tool (curl, native app) — allow
     if (!origin) return true;
@@ -327,9 +358,6 @@ const wss = new WebSocket.Server({
   },
 });
 
-// Snapshot timestamps track when Ring produced a new frame; used as cache keys
-const snapshotTimestamps = {};
-
 async function buildPayload() {
   const cameraSlots = currentLayout.slots.filter((s) => s.type === 'camera');
 
@@ -337,34 +365,20 @@ async function buildPayload() {
     cameraSlots.map(async (slot) => {
       const camIndex = (slot.config && slot.config.index != null) ? slot.config.index : 0;
 
-      // HLS cameras: skip snapshot fetch — calling getSnapshot() while a live
-      // session is active can interfere with Ring's session state.
-      if (isHlsCamera(camIndex)) {
-        const hlsCam = getCameraList().find((c) => c.index === camIndex);
-        return {
-          slotId: slot.id,
-          name: hlsCam ? hlsCam.name : `Camera ${camIndex}`,
-          hlsUrl: getHlsUrl(camIndex),
-          snapshotUrl: null,
-          lastUpdated: new Date().toISOString(),
-        };
-      }
+      // getRingSnapshot is sync — reads from the 30-min scheduled cache, never wakes the camera
+      const snap = getRingSnapshot(camIndex);
+      const motionClipUrl = await getMotionClipUrl(camIndex);
 
-      const snap = await getRingSnapshot(camIndex);
-      const ts = snap.lastUpdated;
-      if (ts !== snapshotTimestamps[camIndex]) {
-        snapshotTimestamps[camIndex] = ts;
-      }
       return {
-        slotId: slot.id,
-        name: snap.name,
-        hlsUrl: null,
-        offline: !snap.snapshotBuffer,
-        // Cache key changes only when Ring produces a new frame
-        snapshotUrl: snap.snapshotBuffer
-          ? `/api/snapshot/${camIndex}?t=${snapshotTimestamps[camIndex]}`
-          : null,
-        lastUpdated: ts,
+        slotId:        slot.id,
+        camIndex,
+        name:          snap.name,
+        isPlaceholder: snap.isPlaceholder,
+        snapshotUrl:   snap.isPlaceholder
+          ? null
+          : `/api/snapshot/${camIndex}?t=${encodeURIComponent(snap.lastUpdated)}`,
+        snapshotAge:   snap.lastUpdated,
+        motionClipUrl: motionClipUrl || null,
       };
     })
   );
@@ -493,7 +507,7 @@ server.listen(PORT, async () => {
   initEcobee(config);
   dashboardState.ecobeeReady = true;
   scheduleRender();
-  initHls(getCameras(), config);
+  initHls();
   scheduleRender();
   dashboardState.hlsReady = true;
   scheduleRender();

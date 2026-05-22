@@ -18,11 +18,18 @@
   <!-- Full-screen camera expand overlay — singleton outside the grid -->
   <div class="camera-expand-overlay" id="camera-overlay">
     <img class="camera-expand-img" id="camera-overlay-img" src="" alt="">
-    <!-- Used for HLS cameras in the overlay; snapshot cameras use the img above -->
     <video class="camera-expand-video" id="camera-overlay-video"
            autoplay muted playsinline></video>
+    <div class="camera-expand-status" id="camera-overlay-status"></div>
     <div class="camera-expand-label" id="camera-overlay-label"></div>
     <button class="camera-expand-close" id="camera-overlay-close" aria-label="Close">&#x2715;</button>
+    <div class="camera-idle-prompt" id="camera-idle-prompt">
+      <div class="camera-idle-box">
+        <p class="camera-idle-text">Still watching?</p>
+        <button class="camera-idle-btn" id="camera-idle-yes">Keep watching</button>
+        <div class="camera-idle-bar"><div class="camera-idle-bar-fill" id="camera-idle-bar-fill"></div></div>
+      </div>
+    </div>
   </div>
 
   <!--
