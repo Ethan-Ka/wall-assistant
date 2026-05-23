@@ -165,6 +165,66 @@ html, body {
   color: rgba(255, 255, 255, 0.72);
 }
 
+.camera-label-battery {
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.camera-label-battery.low {
+  color: #f59e0b;
+}
+
+/* ── Stale snapshot overlay ── */
+
+.camera-stale::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(245, 158, 11, 0.07);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.camera-stale .camera-label-age {
+  color: #f59e0b;
+}
+
+/* ── Low battery overlay — dims card and blocks tap-to-expand ── */
+
+.camera-low-battery {
+  cursor: default;
+}
+
+.camera-low-battery::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.camera-low-battery::after {
+  content: 'Low Battery';
+  position: absolute;
+  top: 0.625rem;
+  right: 0.625rem;
+  background: rgba(0, 0, 0, 0.75);
+  color: #f59e0b;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0.2rem 0.45rem;
+  border-radius: 0.25rem;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  z-index: 3;
+}
+
 /* ── Temperature card ── */
 
 .temp-card {

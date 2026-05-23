@@ -215,6 +215,16 @@ function getCameraBattery(index) {
   return level != null ? level : null;
 }
 
+// Returns true when there is a motion clip that postdates the most recent snapshot
+// (mirrors the discard condition in getMotionClipUrl without async URL refresh).
+function hasRecentMotionClip(index) {
+  const clip = motionClips[index];
+  if (!clip) return false;
+  const snapTime = snapshotTimestamp[index];
+  if (snapTime && new Date(clip.timestamp) <= new Date(snapTime)) return false;
+  return true;
+}
+
 module.exports = {
   initRing,
   getRingSnapshot,
@@ -223,5 +233,6 @@ module.exports = {
   getCameras,
   isCameraLowBattery,
   getCameraBattery,
+  hasRecentMotionClip,
   takeSnapshot: doScheduledSnapshot,
 };

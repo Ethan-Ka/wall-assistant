@@ -728,6 +728,14 @@
       row.appendChild(name);
       row.appendChild(kind);
       row.appendChild(dropped);
+
+      if (camera.battery != null) {
+        var bat = document.createElement('div');
+        bat.className = 'device-battery' + (camera.lowBattery ? ' low' : '');
+        bat.textContent = camera.battery + '% battery' + (camera.lowBattery ? ' — suspended' : '');
+        row.appendChild(bat);
+      }
+
       container.appendChild(row);
     });
   }
@@ -745,8 +753,36 @@
       });
   }
 
+  function loadConfig() {
+    fetch('/api/config')
+      .then(function (r) { return r.json(); })
+      .then(function (cfg) {
+        var input = document.getElementById('update-interval-input');
+        if (input && cfg.updateIntervalMs) input.value = cfg.updateIntervalMs;
+      })
+      .catch(function () {});
+  }
+
+  document.getElementById('save-interval-btn').addEventListener('click', function () {
+    var input = document.getElementById('update-interval-input');
+    var ms = parseInt(input && input.value, 10);
+    if (isNaN(ms) || ms < 1000 || ms > 60000) {
+      showNotification('Interval must be 1000–60000 ms', 'error');
+      return;
+    }
+    fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ updateIntervalMs: ms }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function () { showNotification('Update interval applied', 'success'); })
+      .catch(function () { showNotification('Failed to apply interval', 'error'); });
+  });
+
   loadCameras();
   setInterval(loadCameras, 30000);
+  loadConfig();
 
   loadLayout();
 }());

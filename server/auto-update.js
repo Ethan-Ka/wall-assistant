@@ -8,8 +8,8 @@ const REMOTE_URL = 'https://github.com/Ethan-Ka/wall-assistant.git';
 const BRANCH = 'main';
 const CHECK_INTERVAL_MS = 10 * 60 * 1000;
 const IS_WIN = process.platform === 'win32';
-const GIT = IS_WIN ? 'git.cmd' : 'git';
-const NPM = IS_WIN ? 'npm.cmd' : 'npm';
+const GIT = 'git';
+const NPM = 'npm';
 
 function git(...args) {
   return execFileSync(GIT, ['-c', 'safe.directory=*', ...args], {

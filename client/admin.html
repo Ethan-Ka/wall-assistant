@@ -65,6 +65,17 @@
         <h2>Connected Devices</h2>
         <div id="devices-list"><div class="devices-placeholder">Loading&hellip;</div></div>
       </div>
+      <div class="devices-panel">
+        <h2>Server Settings</h2>
+        <div class="server-setting-row">
+          <label for="update-interval-input">WS Update Interval</label>
+          <div class="server-setting-controls">
+            <input type="number" id="update-interval-input" min="1000" max="60000" step="500" value="3000">
+            <span class="server-setting-unit">ms</span>
+            <button class="btn btn-primary btn-sm" id="save-interval-btn">Apply</button>
+          </div>
+        </div>
+      </div>
     </aside>
   </div>
 

@@ -74,7 +74,7 @@ console.info = (...args) => pushLog('log', args);
 console.warn = (...args) => pushLog('warn', args);
 console.error = (...args) => pushLog('error', args);
 
-const { initRing, getRingSnapshot, getMotionClipUrl, getCameraList, getCameras, isCameraLowBattery, getCameraBattery, takeSnapshot } = require('./ring');
+const { initRing, getRingSnapshot, getMotionClipUrl, getCameraList, getCameras, isCameraLowBattery, getCameraBattery, hasRecentMotionClip, takeSnapshot } = require('./ring');
 const { initHls, startStream, stopStream, getHlsUrl, getHlsDir } = require('./hls');
 const { initEcobee } = require('./ecobee');
 const { getTemperature } = require('./temperature');
@@ -444,10 +444,12 @@ app.post('/api/stream/:index/stop', (req, res) => {
   const index = parseInt(req.params.index, 10);
   if (!isNaN(index) && index >= 0) {
     stopStream(index);
-    // Capture a fresh snapshot so the last-seen camera state is shown immediately
-    // (avoids waiting up to 10 min for the next scheduled pull)
+    // Capture a fresh snapshot — but skip if a motion clip is waiting to be shown,
+    // because a newer snapshot timestamp would cause getMotionClipUrl to discard the clip.
     const cams = getCameras();
-    if (cams[index]) takeSnapshot(cams[index], index).catch(() => {});
+    if (cams[index] && !hasRecentMotionClip(index)) {
+      takeSnapshot(cams[index], index).catch(() => {});
+    }
   }
   res.json({ ok: true });
 });

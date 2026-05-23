@@ -418,6 +418,61 @@ body {
   color: var(--accent);
 }
 
+.device-battery {
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+.device-battery.low {
+  color: #f59e0b;
+}
+
+/* Server settings panel */
+
+.server-setting-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
+}
+
+.server-setting-row label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.server-setting-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.server-setting-controls input[type="number"] {
+  width: 90px;
+  padding: 0.35rem 0.5rem;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 0.88rem;
+  text-align: right;
+}
+
+.server-setting-unit {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.btn-sm {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.82rem;
+}
+
 /* Span size badge shown on multi-cell widgets */
 .cell-span-badge {
   position: absolute;

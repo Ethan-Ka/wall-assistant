@@ -26,6 +26,8 @@
   var reconnectTimer = null;
   var websocketErrorTimer = null;
   var websocketFailureReported = false;
+  var STALE_THRESHOLD_MS = 20 * 60 * 1000; // 20 min ≈ 2 missed 10-min snapshot intervals
+  var LOW_BATTERY_THRESHOLD = 15;
 
   // ── Grid rendering ────────────────────────────────────
 
@@ -153,6 +155,8 @@
       video.muted    = true;
       video.setAttribute('playsinline', '');
       video.addEventListener('error', function () {
+        var src = video.getAttribute('src');
+        if (!src || src === '') return;
         reportClientError('camera', 'Live video failed to load', (slot.config && slot.config.name) || slot.id);
       });
 
@@ -163,7 +167,11 @@
       card.appendChild(img);
       card.appendChild(video);
       card.appendChild(label);
-      card.onclick = function () { openCameraExpand(slot.id); };
+      card.onclick = function () {
+        var d = cameraData[slot.id];
+        if (d && d.lowBattery) return;
+        openCameraExpand(slot.id);
+      };
 
     } else if (slot.type === 'temperature') {
       card.classList.add('temp-card');
@@ -457,7 +465,7 @@
 
   function openCameraExpand(slotId) {
     var data = cameraData[slotId];
-    if (!data) return;
+    if (!data || data.lowBattery) return;
     currentOverlaySlotId = slotId;
     streamStartTime = null;
     updateCameraLabel(overlayLbl, data);
@@ -480,18 +488,24 @@
 
     var camIndex = data.camIndex;
     fetch('/api/stream/' + camIndex + '/start', { method: 'POST' })
-      .then(function (r) { return r.json(); })
-      .then(function (result) {
-        // Check the overlay is still open for this same camera
+      .then(function (r) {
+        return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+      })
+      .then(function (resp) {
         if (currentOverlaySlotId !== slotId) return;
+        if (!resp.ok) {
+          overlayStatus.textContent = resp.body.error || 'Stream unavailable';
+          // Keep status visible to show the error message
+          return;
+        }
         overlayStatus.classList.remove('visible');
-        if (result.hlsUrl) {
+        if (resp.body.hlsUrl) {
           overlayImg.style.display = 'none';
           overlayVideo.classList.add('active');
-          attachHls(overlayVideo, result.hlsUrl);
+          attachHls(overlayVideo, resp.body.hlsUrl);
           streamStartTime = Date.now();
         }
-        // On timeout/error, snapshot remains visible as fallback
+        // On timeout, snapshot remains visible as fallback
       })
       .catch(function () {
         if (currentOverlaySlotId === slotId) overlayStatus.classList.remove('visible');
@@ -544,6 +558,13 @@
       var ageEl = el('span', 'camera-label-age');
       ageEl.textContent = ageText;
       labelEl.appendChild(ageEl);
+    }
+
+    if (data.battery != null) {
+      var batEl = el('span', 'camera-label-battery');
+      batEl.textContent = data.battery + '%';
+      if (data.battery < LOW_BATTERY_THRESHOLD) batEl.classList.add('low');
+      labelEl.appendChild(batEl);
     }
   }
 
@@ -787,15 +808,39 @@
 
       var prev = cameraData[slotId] || {};
 
+      // Track the moment a live stream transitions to stopped so we can hold the
+      // last video frame until a fresh snapshot arrives (avoids a flash of a
+      // pre-stream snapshot image).  Cleared once we successfully show fresh data.
+      var streamStoppedAt = (prev.streamUrl && !cam.streamUrl)
+        ? Date.now()
+        : (cam.streamUrl ? null : (prev.streamStoppedAt || null));
+
       // Always keep cameraData current so the expand overlay has an up-to-date snapshot URL
       cameraData[slotId] = {
-        camIndex:      cam.camIndex != null ? cam.camIndex : (prev.camIndex != null ? prev.camIndex : 0),
-        name:          cam.name || prev.name || slotId,
-        lastUpdated:   cam.streamAge || cam.snapshotAge || prev.lastUpdated || null,
-        url:           cam.snapshotUrl || prev.url || null,
-        streamUrl:     cam.streamUrl || null,
-        motionClipUrl: cam.motionClipUrl || null,
+        camIndex:        cam.camIndex != null ? cam.camIndex : (prev.camIndex != null ? prev.camIndex : 0),
+        name:            cam.name || prev.name || slotId,
+        lastUpdated:     cam.streamAge || cam.snapshotAge || prev.lastUpdated || null,
+        url:             cam.snapshotUrl || prev.url || null,
+        streamUrl:       cam.streamUrl || null,
+        motionClipUrl:   cam.motionClipUrl || null,
+        battery:         cam.battery != null ? cam.battery : (prev.battery != null ? prev.battery : null),
+        lowBattery:      !!cam.lowBattery,
+        streamStoppedAt: streamStoppedAt,
       };
+
+      // Apply low-battery and stale visual states (mutually exclusive — low battery wins)
+      if (cam.lowBattery) {
+        card.classList.add('camera-low-battery');
+        card.classList.remove('camera-stale');
+      } else {
+        card.classList.remove('camera-low-battery');
+        var snapAgeMs = cam.snapshotAge ? Date.now() - new Date(cam.snapshotAge).getTime() : Infinity;
+        if (!cam.isPlaceholder && cam.snapshotAge && snapAgeMs > STALE_THRESHOLD_MS) {
+          card.classList.add('camera-stale');
+        } else {
+          card.classList.remove('camera-stale');
+        }
+      }
 
       if (cam.streamUrl) {
         // ── Live stream mode: show the current frame from the HLS source ──
@@ -813,8 +858,10 @@
         card.classList.remove('camera-offline');
         if (img) { img.style.display = 'none'; img.classList.remove('loaded'); }
         if (vid) {
-          // Compare against previous stored URL, not vid.src (which is always absolute)
+          // Compare against previous stored URL, not vid.src (which is always absolute).
+          // detachHls first in case we are transitioning away from a live stream.
           if (prev.motionClipUrl !== cam.motionClipUrl) {
+            detachHls(vid);
             vid.src  = cam.motionClipUrl;
             vid.loop = true;
             vid.play().catch(function () {});
@@ -823,21 +870,34 @@
         }
 
       } else if (cam.snapshotUrl) {
-        // ── Snapshot mode: show the 30-min cached frame ──
+        // ── Snapshot mode ──
+        // If a stream just ended, hold the last video frame until a fresh snapshot
+        // arrives (< 30 s old).  Give up after 60 s so a failed takeSnapshot
+        // doesn't leave the card frozen on the last stream frame indefinitely.
         card.classList.remove('camera-offline');
-        if (vid && (prev.motionClipUrl || prev.streamUrl)) {
-          // Video source was playing — clear it
-          vid.classList.remove('active');
-          vid.loop = false;
-          vid.src = '';
-          vid.load();
+        var snapAgeSinceNow = cam.snapshotAge
+          ? Date.now() - new Date(cam.snapshotAge).getTime()
+          : Infinity;
+        var streamEndedRecently = !!streamStoppedAt &&
+          (Date.now() - streamStoppedAt) < 60000;
+        var snapIsFresh = !streamEndedRecently || snapAgeSinceNow < 30000;
+
+        if (snapIsFresh) {
+          if (vid && (prev.motionClipUrl || prev.streamUrl)) {
+            // Video source was playing — properly clean up (including any HLS instance)
+            vid.classList.remove('active');
+            vid.loop = false;
+            detachHls(vid);
+          }
+          if (img) {
+            img.style.display = '';
+            // Compare payload URLs (both relative) to avoid constant re-assignment
+            if (prev.url !== cam.snapshotUrl) img.src = cam.snapshotUrl;
+            img.classList.add('loaded');
+          }
+          cameraData[slotId].streamStoppedAt = null; // fresh snapshot shown — clear hold
         }
-        if (img) {
-          img.style.display = '';
-          // Compare payload URLs (both relative) to avoid constant re-assignment
-          if (prev.url !== cam.snapshotUrl) img.src = cam.snapshotUrl;
-          img.classList.add('loaded');
-        }
+        // else: keep video element active showing the last stream frame
 
       } else {
         // ── No data yet (initial load, placeholder SVG served by server) ──
