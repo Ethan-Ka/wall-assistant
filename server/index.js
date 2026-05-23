@@ -3,12 +3,15 @@
 const util = require('util');
 const readline = require('readline');
 const os = require('os');
+const fs = require('fs');
 require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
 
 const http = require('http');
 const path = require('path');
 const express = require('express');
 const WebSocket = require('ws');
+
+const SETTINGS_PATH = path.join(__dirname, '../settings.json');
 
 const isDashboardEnabled = process.stdout.isTTY && process.stderr.isTTY;
 const originalConsole = {
@@ -35,6 +38,12 @@ const MAX_CLIENT_ERRORS = 8;
 let renderQueued = false;
 let nextClientId = 1;
 const clientMetadata = new Map();
+
+const GRAPH_SAMPLES = 30;
+let requestsInInterval = 0;
+const requestsHistory = [];
+const droppedHistory = [];
+let lastTotalDropped = 0;
 
 function formatLogLine(args) {
   return util.format(...args);
@@ -65,7 +74,7 @@ console.info = (...args) => pushLog('log', args);
 console.warn = (...args) => pushLog('warn', args);
 console.error = (...args) => pushLog('error', args);
 
-const { initRing, getRingSnapshot, getMotionClipUrl, getCameraList, getCameras } = require('./ring');
+const { initRing, getRingSnapshot, getMotionClipUrl, getCameraList, getCameras, isCameraLowBattery, getCameraBattery, takeSnapshot } = require('./ring');
 const { initHls, startStream, stopStream, getHlsUrl, getHlsDir } = require('./hls');
 const { initEcobee } = require('./ecobee');
 const { getTemperature } = require('./temperature');
@@ -91,6 +100,14 @@ function color(code, text) {
   return isDashboardEnabled ? `\u001b[${code}m${text}\u001b[0m` : text;
 }
 
+function statusColor(ok, text) {
+  return color(ok ? '1;32' : '1;33', text);
+}
+
+function dimColor(text) {
+  return color('90', text);
+}
+
 function truncate(text, width) {
   if (text.length <= width) return text;
   if (width <= 1) return text.slice(0, width);
@@ -100,6 +117,14 @@ function truncate(text, width) {
 function padRight(text, width) {
   if (text.length >= width) return text;
   return text + ' '.repeat(width - text.length);
+}
+
+function sparkline(data, width) {
+  const BLOCKS = '▁▂▃▄▅▆▇█';
+  const window = data.slice(-width);
+  const max = Math.max(...window, 1);
+  const bar = window.map((v) => BLOCKS[Math.min(7, Math.floor((v / max) * 8))]).join('');
+  return bar.padStart(width, ' ');
 }
 
 function getDisplayLines() {
@@ -117,10 +142,12 @@ function getDisplayLines() {
   const lines = [];
   lines.push(color('1;36', 'wall-assistant server'));
   const localIp = getLocalIp();
-  const urlPart = localIp ? `http://localhost:${PORT}  |  http://${localIp}:${PORT}` : `http://localhost:${PORT}`;
-  lines.push(`${urlPart}  |  uptime ${uptimeSeconds}s  |  ws clients ${wsCount}`);
-  lines.push(`ring ${dashboardState.ringReady ? 'ready' : 'starting'}  |  ecobee ${dashboardState.ecobeeReady ? 'ready' : 'starting'}  |  hls on-demand`);
-  lines.push(`layout ${layout.slots.length} slots (${layout.grid.cols}x${layout.grid.rows})  |  last payload ${lastPayload}  |  last client event ${lastEvent}`);
+  const urlPart = localIp
+    ? `${color('1;34', `http://localhost:${PORT}`)}  |  ${color('1;34', `http://${localIp}:${PORT}`)}`
+    : color('1;34', `http://localhost:${PORT}`);
+  lines.push(`${urlPart}  |  uptime ${color('1;36', `${uptimeSeconds}s`)}  |  ws clients ${color('1;36', String(wsCount))}`);
+  lines.push(`ring ${statusColor(dashboardState.ringReady, dashboardState.ringReady ? 'ready' : 'starting')}  |  ecobee ${statusColor(dashboardState.ecobeeReady, dashboardState.ecobeeReady ? 'ready' : 'starting')}  |  hls ${color('1;32', 'on-demand')}`);
+  lines.push(`layout ${color('1;36', `${layout.slots.length} slots`)} (${dimColor(`${layout.grid.cols}x${layout.grid.rows}`)})  |  last payload ${lastPayload === 'waiting' ? color('1;33', lastPayload) : color('1;32', lastPayload)}  |  last client event ${lastEvent === 'none' ? color('90', lastEvent) : color('1;32', lastEvent)}`);
   if (dashboardState.lastPayloadError) {
     lines.push(color('1;31', `payload status: ${dashboardState.lastPayloadError}`));
   }
@@ -128,9 +155,11 @@ function getDisplayLines() {
   lines.push(color('1;33', 'connected devices'));
   if (cameraList.length) {
     cameraList.forEach((camera) => {
-      const streaming = getHlsUrl(camera.index) ? 'streaming' : 'snapshot';
+      const streaming = getHlsUrl(camera.index) ? color('1;32', 'streaming') : color('1;33', 'snapshot');
       const dropped = camera.dropped ? `  |  ${camera.dropped} dropped` : '';
-      lines.push(`camera ${camera.index}: ${camera.name}  |  ${camera.kind || 'unknown'}  |  ${streaming}${dropped}`);
+      const battStr = camera.battery != null ? `  |  ${camera.battery}% bat` : '';
+      const lowBatStr = camera.lowBattery ? color('1;33', '  |  LOW BATTERY') : '';
+      lines.push(`camera ${color('1;36', String(camera.index))}: ${camera.name}  |  ${dimColor(camera.kind || 'unknown')}  |  ${streaming}${dropped}${battStr}${lowBatStr}`);
     });
   } else {
     lines.push('no Ring cameras detected yet');
@@ -144,7 +173,7 @@ function getDisplayLines() {
       const ageSeconds = Math.max(0, Math.floor((Date.now() - client.connectedAt.getTime()) / 1000));
       const origin = client.origin || 'same-host';
       const userAgent = client.userAgent || 'unknown';
-      lines.push(`client ${client.id}: ${client.remoteAddress || 'unknown'}  |  ${ageSeconds}s connected  |  origin ${origin}  |  ua ${userAgent}`);
+      lines.push(`client ${color('1;36', String(client.id))}: ${client.remoteAddress || 'unknown'}  |  ${color('1;32', `${ageSeconds}s connected`)}  |  origin ${dimColor(origin)}  |  ua ${userAgent}`);
     });
   } else {
     lines.push('no websocket clients connected yet');
@@ -162,6 +191,19 @@ function getDisplayLines() {
   } else {
     lines.push('no client errors reported yet');
   }
+
+  lines.push('');
+  lines.push(color('1;33', 'metrics'));
+  const termWidth = Math.max(process.stdout.columns || 100, 60);
+  const graphWidth = Math.min(GRAPH_SAMPLES, Math.max(20, termWidth - 30));
+  const totalDropped = lastTotalDropped;
+  const latestReq = requestsHistory[requestsHistory.length - 1] || 0;
+  lines.push(
+    `req/s   ${color('1;34', sparkline(requestsHistory, graphWidth))}  ${color('1;36', String(latestReq))} now`
+  );
+  lines.push(
+    `dropped ${color('1;31', sparkline(droppedHistory, graphWidth))}  ${color('1;36', String(totalDropped))} total`
+  );
 
   lines.push('');
   lines.push(color('1;33', 'recent logs'));
@@ -232,6 +274,14 @@ try {
   config = require('../config.json');
 } catch (_) {}
 
+let serverSettings = {};
+try {
+  serverSettings = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
+} catch (_) {}
+
+let updateIntervalMs = (serverSettings.updateIntervalMs >= 1000) ? serverSettings.updateIntervalMs : 3000;
+let broadcastIntervalId = null;
+
 let currentLayout = readLayout();
 
 const PORT = process.env.PORT || 3000;
@@ -239,6 +289,7 @@ const app = express();
 
 app.use(express.json({ limit: '16kb' }));
 app.use(express.static(path.join(__dirname, '../client')));
+app.use((_req, _res, next) => { requestsInInterval++; next(); });
 
 app.get('/admin', (_req, res) => {
   res.sendFile(path.join(__dirname, '../client/admin.html'));
@@ -279,6 +330,43 @@ app.post('/api/layout', (req, res) => {
 
 app.get('/api/cameras', (_req, res) => {
   res.json(getCameraList());
+});
+
+app.get('/api/health', (_req, res) => {
+  res.json({
+    status: 'ok',
+    uptime: Math.floor((Date.now() - dashboardState.startedAt.getTime()) / 1000),
+    ringReady: dashboardState.ringReady,
+    ecobeeReady: dashboardState.ecobeeReady,
+    wsClients: wss ? wss.clients.size : 0,
+    cameras: getCameraList(),
+    updateIntervalMs,
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.get('/api/config', (_req, res) => {
+  res.json({ updateIntervalMs });
+});
+
+app.post('/api/config', (req, res) => {
+  const { updateIntervalMs: newInterval } = req.body;
+  if (newInterval != null) {
+    const ms = parseInt(newInterval, 10);
+    if (isNaN(ms) || ms < 1000 || ms > 60000) {
+      return res.status(400).json({ error: 'updateIntervalMs must be between 1000 and 60000' });
+    }
+    updateIntervalMs = ms;
+    serverSettings.updateIntervalMs = ms;
+    try {
+      fs.writeFileSync(SETTINGS_PATH, JSON.stringify(serverSettings, null, 2) + '\n', 'utf8');
+    } catch (e) {
+      console.error('[config] Failed to persist settings:', e.message);
+    }
+    startBroadcastInterval();
+    scheduleRender();
+  }
+  res.json({ ok: true, updateIntervalMs });
 });
 
 app.get('/api/spotify', async (_req, res) => {
@@ -334,6 +422,10 @@ app.post('/api/stream/:index/start', async (req, res) => {
     return res.status(404).json({ error: 'Camera not found' });
   }
 
+  if (isCameraLowBattery(index)) {
+    return res.status(503).json({ error: 'Camera unavailable — low battery' });
+  }
+
   const existingUrl = getHlsUrl(index);
   if (existingUrl) return res.json({ hlsUrl: existingUrl });
 
@@ -350,7 +442,13 @@ app.post('/api/stream/:index/start', async (req, res) => {
 
 app.post('/api/stream/:index/stop', (req, res) => {
   const index = parseInt(req.params.index, 10);
-  if (!isNaN(index) && index >= 0) stopStream(index);
+  if (!isNaN(index) && index >= 0) {
+    stopStream(index);
+    // Capture a fresh snapshot so the last-seen camera state is shown immediately
+    // (avoids waiting up to 10 min for the next scheduled pull)
+    const cams = getCameras();
+    if (cams[index]) takeSnapshot(cams[index], index).catch(() => {});
+  }
   res.json({ ok: true });
 });
 
@@ -380,20 +478,25 @@ async function buildPayload() {
     cameraSlots.map(async (slot) => {
       const camIndex = (slot.config && slot.config.index != null) ? slot.config.index : 0;
 
-      // getRingSnapshot is sync — reads from the 30-min scheduled cache, never wakes the camera
+      // getRingSnapshot is sync — reads from the scheduled cache (5s), never wakes the camera
       const snap = getRingSnapshot(camIndex);
       const motionClipUrl = await getMotionClipUrl(camIndex);
+      const streamUrl = getHlsUrl(camIndex);
 
       return {
         slotId:        slot.id,
         camIndex,
         name:          snap.name,
         isPlaceholder: snap.isPlaceholder,
+        streamUrl:     streamUrl || null,
+        streamAge:     streamUrl ? new Date().toISOString() : null,
         snapshotUrl:   snap.isPlaceholder
           ? null
           : `/api/snapshot/${camIndex}?t=${encodeURIComponent(snap.lastUpdated)}`,
         snapshotAge:   snap.lastUpdated,
         motionClipUrl: motionClipUrl || null,
+        battery:       getCameraBattery(camIndex),
+        lowBattery:    isCameraLowBattery(camIndex),
       };
     })
   );
@@ -492,7 +595,7 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-setInterval(async () => {
+async function broadcastPayload() {
   let payload;
   try {
     payload = await buildPayload();
@@ -507,9 +610,25 @@ setInterval(async () => {
       client.send(payload);
     }
   }
-}, 3000);
+}
+
+function startBroadcastInterval() {
+  if (broadcastIntervalId) clearInterval(broadcastIntervalId);
+  broadcastIntervalId = setInterval(broadcastPayload, updateIntervalMs);
+}
+
+startBroadcastInterval();
 
 setInterval(() => {
+  requestsHistory.push(requestsInInterval);
+  requestsInInterval = 0;
+  if (requestsHistory.length > GRAPH_SAMPLES) requestsHistory.shift();
+
+  const totalDropped = getCameraList().reduce((sum, c) => sum + (c.dropped || 0), 0);
+  droppedHistory.push(Math.max(0, totalDropped - lastTotalDropped));
+  lastTotalDropped = totalDropped;
+  if (droppedHistory.length > GRAPH_SAMPLES) droppedHistory.shift();
+
   scheduleRender();
 }, 1000);
 

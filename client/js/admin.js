@@ -51,8 +51,8 @@
         options: [['fahrenheit', 'Fahrenheit (°F)'], ['celsius', 'Celsius (°C)']] },
     ],
     clock: [
-      { key: 'format', label: 'Time Format', type: 'select', def: '24h',
-        options: [['24h', '24-hour'], ['12h', '12-hour']] },
+      { key: 'format', label: 'Time Format', type: 'select', def: '12h',
+        options: [['12h', '12-hour'], ['24h', '24-hour']] },
       { key: 'showSeconds', label: 'Show Seconds', type: 'select', def: 'false',
         options: [['false', 'No'], ['true', 'Yes']] },
     ],

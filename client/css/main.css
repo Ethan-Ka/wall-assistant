@@ -326,6 +326,15 @@ html, body {
   background: #000;
 }
 
+.camera-expand-overlay::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 2;
+  pointer-events: none;
+}
+
 .camera-expand-overlay.active {
   display: block;
 }
@@ -338,6 +347,7 @@ html, body {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  z-index: 1;
 }
 
 .camera-expand-video {
@@ -354,11 +364,13 @@ html, body {
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
+  z-index: 3;
   font-size: 0.85rem;
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(255, 255, 255, 0.92);
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.6);
 }
 
 .camera-expand-status.visible {
@@ -372,6 +384,7 @@ html, body {
   width: 100%;
   padding: 2rem 1rem 1rem;
   background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
+  z-index: 3;
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
@@ -464,6 +477,7 @@ html, body {
   position: absolute;
   top: 1rem;
   right: 1rem;
+  z-index: 3;
   width: 2.25rem;
   height: 2.25rem;
   border-radius: 50%;

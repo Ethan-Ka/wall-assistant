@@ -50,11 +50,23 @@ async function getISS(cfg) {
     } catch (_) {}
   }
 
+  let distanceKm = null;
+  if (lat != null && lon != null) {
+    const R = 6371;
+    const dLat = (iss.latitude - lat) * Math.PI / 180;
+    const dLon = (iss.longitude - lon) * Math.PI / 180;
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(lat * Math.PI / 180) * Math.cos(iss.latitude * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+    distanceKm = Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+  }
+
   const data = {
-    latitude:  iss.latitude,
-    longitude: iss.longitude,
+    latitude:   iss.latitude,
+    longitude:  iss.longitude,
     altitudeKm: Math.round(iss.altitude),
     speedKmh:   Math.round(iss.velocity),
+    distanceKm,
     flights,
   };
   cache = { data, ts: Date.now() };

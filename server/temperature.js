@@ -38,7 +38,7 @@ async function getOutdoorTemperature(config) {
 
   const lat = (config && config.latitude) || 37.7749;
   const lon = (config && config.longitude) || -122.4194;
-  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true&daily=temperature_2m_max,temperature_2m_min&timezone=auto`;
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true&hourly=relativehumidity_2m,apparent_temperature&daily=temperature_2m_max,temperature_2m_min&timezone=auto`;
 
   try {
     const res = await fetch(url);
@@ -47,12 +47,32 @@ async function getOutdoorTemperature(config) {
     const celsius = w.temperature;
     const highC = json.daily && json.daily.temperature_2m_max && json.daily.temperature_2m_max[0];
     const lowC = json.daily && json.daily.temperature_2m_min && json.daily.temperature_2m_min[0];
+
+    // Attempt to pull humidity and apparent (feels-like) temperature from hourly arrays
+    let humidity = null;
+    let feelsC = null;
+    if (json.hourly && Array.isArray(json.hourly.time) && json.hourly.time.length) {
+      const times = json.hourly.time;
+      const idx = times.indexOf(w.time);
+      if (idx >= 0) {
+        if (json.hourly.relativehumidity_2m && json.hourly.relativehumidity_2m[idx] != null) {
+          humidity = Math.round(json.hourly.relativehumidity_2m[idx]);
+        }
+        if (json.hourly.apparent_temperature && json.hourly.apparent_temperature[idx] != null) {
+          feelsC = Math.round(json.hourly.apparent_temperature[idx] * 10) / 10;
+        }
+      }
+    }
+
     const result = {
       celsius,
       fahrenheit: Math.round((celsius * 9) / 5 + 32),
       highF: highC != null ? Math.round((highC * 9) / 5 + 32) : null,
       lowF: lowC != null ? Math.round((lowC * 9) / 5 + 32) : null,
       condition: WMO_CONDITIONS[w.weathercode] || 'Unknown',
+      humidity: humidity, // percent
+      feels_celsius: feelsC,
+      feels_fahrenheit: feelsC != null ? Math.round((feelsC * 9) / 5 + 32) : null,
       source: 'open-meteo',
     };
     outdoorCache = { data: result, ts: Date.now() };

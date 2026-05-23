@@ -23,7 +23,9 @@
   var slotsByType = {}; // type -> first slot of that type
   var pendingClientErrors = [];
   var maxPendingClientErrors = 8;
-  var droppedSnapshots = 0;
+  var reconnectTimer = null;
+  var websocketErrorTimer = null;
+  var websocketFailureReported = false;
 
   // ── Grid rendering ────────────────────────────────────
 
@@ -144,9 +146,7 @@
       var img = el('img', 'camera-img');
       img.src = '';
       img.alt = (slot.config && slot.config.name) || 'Camera';
-      img.addEventListener('error', function () {
-        droppedSnapshots++;
-      });
+
 
       var video = el('video', 'camera-video');
       video.autoplay = true;
@@ -255,7 +255,12 @@
       var velLbl  = el('div', 'iss-stat-label'); velLbl.textContent = 'km/h';
       velStat.appendChild(velVal); velStat.appendChild(velLbl);
 
-      issStats.appendChild(altStat); issStats.appendChild(velStat);
+      var distStat = el('div', 'iss-stat');
+      var distVal  = el('div', 'iss-stat-value iss-dist-val'); distVal.textContent = '--';
+      var distLbl  = el('div', 'iss-stat-label'); distLbl.textContent = 'km from you';
+      distStat.appendChild(distVal); distStat.appendChild(distLbl);
+
+      issStats.appendChild(altStat); issStats.appendChild(velStat); issStats.appendChild(distStat);
       card.appendChild(issHdr); card.appendChild(issPos); card.appendChild(issStats);
 
       if (!slot.config || slot.config.showFlights !== 'false') {
@@ -329,6 +334,7 @@
   // or native src assignment on Safari (which supports HLS natively).
   function attachHls(videoEl, url) {
     detachHls(videoEl);
+    videoEl.loop = false;
     if (typeof Hls !== 'undefined' && Hls.isSupported()) {
       var hls = new Hls({ lowLatencyMode: false, debug: false });
       hls.loadSource(url);
@@ -349,7 +355,7 @@
   // ── Camera expand overlay ─────────────────────────────
 
   // keyed by slotId — populated by updateCameras
-  // { camIndex, name, lastUpdated, url (snapshot), motionClipUrl }
+  // { camIndex, name, lastUpdated, url (snapshot), motionClipUrl, streamUrl }
   var cameraData = {};
 
   var overlay       = document.getElementById('camera-overlay');
@@ -622,7 +628,23 @@
     condEl.textContent = outdoor.condition || '';
 
     var hiloEl = document.getElementById('temp-hilo');
-    if (hiloEl) hiloEl.textContent = formatHiLo(outdoor.highF, outdoor.lowF, units);
+    if (hiloEl) {
+      var hiloText = formatHiLo(outdoor.highF, outdoor.lowF, units);
+      // Append humidity and feels-like when available
+      if (outdoor.humidity != null) {
+        hiloText += (hiloText ? '  ' : '') + 'Hum: ' + outdoor.humidity + '%';
+      }
+      var feels = null;
+      if (units === 'celsius') {
+        feels = outdoor.feels_celsius != null ? Math.round(outdoor.feels_celsius) + '°C' : null;
+      } else {
+        feels = outdoor.feels_fahrenheit != null ? Math.round(outdoor.feels_fahrenheit) + '°F' : null;
+      }
+      if (feels) {
+        hiloText += (hiloText ? '  ' : '') + 'Feels: ' + feels;
+      }
+      hiloEl.textContent = hiloText;
+    }
   }
 
   // ── Sparkline SVG (DOM-built — no innerHTML with user data) ──
@@ -769,12 +791,24 @@
       cameraData[slotId] = {
         camIndex:      cam.camIndex != null ? cam.camIndex : (prev.camIndex != null ? prev.camIndex : 0),
         name:          cam.name || prev.name || slotId,
-        lastUpdated:   cam.snapshotAge || prev.lastUpdated || null,
+        lastUpdated:   cam.streamAge || cam.snapshotAge || prev.lastUpdated || null,
         url:           cam.snapshotUrl || prev.url || null,
+        streamUrl:     cam.streamUrl || null,
         motionClipUrl: cam.motionClipUrl || null,
       };
 
-      if (cam.motionClipUrl) {
+      if (cam.streamUrl) {
+        // ── Live stream mode: show the current frame from the HLS source ──
+        card.classList.remove('camera-offline');
+        if (img) { img.style.display = 'none'; img.classList.remove('loaded'); }
+        if (vid) {
+          if (prev.streamUrl !== cam.streamUrl) {
+            attachHls(vid, cam.streamUrl);
+          }
+          vid.classList.add('active');
+        }
+
+      } else if (cam.motionClipUrl) {
         // ── Motion clip mode: loop the recording until next scheduled snapshot ──
         card.classList.remove('camera-offline');
         if (img) { img.style.display = 'none'; img.classList.remove('loaded'); }
@@ -791,9 +825,10 @@
       } else if (cam.snapshotUrl) {
         // ── Snapshot mode: show the 30-min cached frame ──
         card.classList.remove('camera-offline');
-        if (vid && prev.motionClipUrl) {
-          // Motion clip was playing — clear it
+        if (vid && (prev.motionClipUrl || prev.streamUrl)) {
+          // Video source was playing — clear it
           vid.classList.remove('active');
+          vid.loop = false;
           vid.src = '';
           vid.load();
         }
@@ -820,7 +855,7 @@
   function updateClock() {
     var clockSlot = slotsByType['clock'];
     var clockCfg  = (clockSlot && clockSlot.config) || {};
-    var is12h   = clockCfg.format === '12h';
+    var is12h   = clockCfg.format !== '24h';
     var showSec = clockCfg.showSeconds === 'true';
 
     var now = new Date();
@@ -859,12 +894,14 @@
     document.querySelectorAll('.iss-card').forEach(function (card) {
       var latEl = card.querySelector('.iss-lat');
       var lonEl = card.querySelector('.iss-lon');
-      var altEl = card.querySelector('.iss-alt-val');
-      var velEl = card.querySelector('.iss-vel-val');
-      if (latEl) latEl.textContent = formatCoord(data.latitude,  'NS');
-      if (lonEl) lonEl.textContent = formatCoord(data.longitude, 'EW');
-      if (altEl) altEl.textContent = data.altitudeKm != null ? data.altitudeKm.toLocaleString() : '--';
-      if (velEl) velEl.textContent = data.speedKmh   != null ? data.speedKmh.toLocaleString()   : '--';
+      var altEl  = card.querySelector('.iss-alt-val');
+      var velEl  = card.querySelector('.iss-vel-val');
+      var distEl = card.querySelector('.iss-dist-val');
+      if (latEl)  latEl.textContent  = formatCoord(data.latitude,  'NS');
+      if (lonEl)  lonEl.textContent  = formatCoord(data.longitude, 'EW');
+      if (altEl)  altEl.textContent  = data.altitudeKm  != null ? data.altitudeKm.toLocaleString()  : '--';
+      if (velEl)  velEl.textContent  = data.speedKmh    != null ? data.speedKmh.toLocaleString()    : '--';
+      if (distEl) distEl.textContent = data.distanceKm  != null ? data.distanceKm.toLocaleString()  : '--';
 
       var flightsList = card.querySelector('.iss-flights-list');
       if (!flightsList) return;
@@ -949,8 +986,9 @@
       var barFill  = card.querySelector('.nowplaying-bar-fill');
       var client = data.client || data.device || null;
       var context = data.context || null;
+      var hasTrack = !!(data.track || data.itemId || data.itemUri);
 
-      if (!data.playing) {
+      if (!hasTrack) {
         if (artImg) artImg.style.display = 'none';
         if (artPh)  artPh.style.display  = '';
         if (trackEl)  trackEl.textContent  = 'Not Playing';
@@ -996,13 +1034,42 @@
 
   function connect() {
     var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(proto + '//' + location.host);
+    var socket = new WebSocket(proto + '//' + location.host);
+    ws = socket;
 
-    ws.addEventListener('open', function () {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+
+    if (websocketErrorTimer) {
+      clearTimeout(websocketErrorTimer);
+      websocketErrorTimer = null;
+    }
+    websocketFailureReported = false;
+
+    function clearTransientSocketState() {
+      if (websocketErrorTimer) {
+        clearTimeout(websocketErrorTimer);
+        websocketErrorTimer = null;
+      }
+      websocketFailureReported = false;
+    }
+
+    function reportSocketFailure() {
+      websocketErrorTimer = null;
+      if (ws !== socket || socket.readyState === WebSocket.OPEN || websocketFailureReported) return;
+      websocketFailureReported = true;
+      reportClientError('websocket', 'Connection error', 'Realtime link failed');
+    }
+
+    socket.addEventListener('open', function () {
+      if (ws !== socket) return;
+      clearTransientSocketState();
       flushClientErrors();
     });
 
-    ws.addEventListener('message', function (evt) {
+    socket.addEventListener('message', function (evt) {
       try {
         var data = JSON.parse(evt.data);
         if (data.type === 'layout') renderLayout(data.layout);
@@ -1020,23 +1087,21 @@
       }
     });
 
-    ws.addEventListener('error', function () {
-      reportClientError('websocket', 'Connection error', 'Realtime link failed');
+    socket.addEventListener('error', function () {
+      if (ws !== socket) return;
+      if (websocketErrorTimer) return;
+      websocketErrorTimer = setTimeout(reportSocketFailure, 5000);
     });
 
-    ws.addEventListener('close', function () {
-      setTimeout(connect, 2000);
+    socket.addEventListener('close', function () {
+      if (ws !== socket) return;
+      clearTransientSocketState();
+      reconnectTimer = setTimeout(connect, 2000);
     });
   }
 
   setInterval(updateClock, 1000);
   setInterval(refreshCameraAges, 1000);
-  setInterval(function () {
-    if (droppedSnapshots > 0) {
-      reportClientError('camera', 'Snapshots dropped', droppedSnapshots + ' in last 60s');
-      droppedSnapshots = 0;
-    }
-  }, 60000);
 
   fetch('/api/layout')
     .then(function (r) { return r.json(); })
