@@ -7,7 +7,7 @@ const { RingApi } = require('ring-client-api');
 const CONFIG_PATH  = path.join(__dirname, '../config.json');
 const CAMERAS_PATH = path.join(__dirname, '../cameras.json');
 
-const SNAPSHOT_INTERVAL_MS     = 10 * 60 * 1000; // 10 minutes between scheduled pulls
+const SNAPSHOT_INTERVAL_MS     = 15 * 1000; // 15 seconds between scheduled pulls
 const RECORDING_DELAY_MS       = 25 * 1000;       // wait for Ring to transcode the clip
 const URL_TTL_MS               = 45 * 60 * 1000;  // refresh pre-signed URL before 1hr expiry
 const LOW_BATTERY_THRESHOLD    = 15;              // suspend all camera requests below this %
