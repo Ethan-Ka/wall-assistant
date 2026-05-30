@@ -305,16 +305,46 @@ function getOfflineRetryMs() {
   return offlineRetryMs;
 }
 
+// Returns the stable identity of the current active motion clip (dingId + timestamp),
+// or null when no clip postdates the most recent snapshot. Used for server-side dedup
+// without relying on the refreshing pre-signed S3 URL.
+function getMotionClipInfo(cameraIndex) {
+  const clip = motionClips[cameraIndex];
+  if (!clip) return null;
+  const snapTime = snapshotTimestamp[cameraIndex];
+  if (snapTime && new Date(clip.timestamp) <= new Date(snapTime)) return null;
+  return { dingId: clip.dingId, timestamp: clip.timestamp };
+}
+
+function getLastMotionEvents() {
+  return cameras.map((cam, index) => {
+    const clip = motionClips[index];
+    const snapTime = snapshotTimestamp[index];
+    const active = clip
+      ? !snapTime || new Date(clip.timestamp) > new Date(snapTime)
+      : false;
+    return {
+      index,
+      name:      cam.name,
+      timestamp: clip ? clip.timestamp : null,
+      dingId:    clip ? clip.dingId : null,
+      active,
+    };
+  });
+}
+
 module.exports = {
   initRing,
   getRingSnapshot,
   getMotionClipUrl,
+  getMotionClipInfo,
   getCameraList,
   getCameras,
   isCameraLowBattery,
   isCameraOnline,
   getCameraBattery,
   hasRecentMotionClip,
+  getLastMotionEvents,
   takeSnapshot: doScheduledSnapshot,
   retryCamera,
   setOfflineRetryMs,

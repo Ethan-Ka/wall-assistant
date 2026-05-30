@@ -118,6 +118,21 @@ All three services auto-refresh their tokens while the server is running. You on
 
 ---
 
+## Admin CLI (optional)
+
+The server exposes a small CLI for runtime toggles. Run these commands while the server is running:
+
+```bash
+node server/admin-cli.js status
+node server/admin-cli.js lockdown toggle
+node server/admin-cli.js lockdown window 22:00 06:00
+node server/admin-cli.js update-interval 5000
+```
+
+Run `node server/admin-cli.js help` for the full list of commands.
+
+---
+
 ## Widget reference
 
 ### Stocks

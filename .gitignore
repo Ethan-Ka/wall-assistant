@@ -1,5 +1,6 @@
 config.json
 settings.json
 server/layout.json
+motion-archive/
 .env
 node_modules/

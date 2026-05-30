@@ -763,8 +763,18 @@
         if (loopsInput && cfg.motionClipLoops) loopsInput.value = cfg.motionClipLoops;
         var retryInput = document.getElementById('offline-retry-input');
         if (retryInput && cfg.offlineRetryMs) retryInput.value = Math.round(cfg.offlineRetryMs / 60000);
+        var lockdownInput = document.getElementById('lockdown-enabled-input');
+        if (lockdownInput) lockdownInput.checked = !!cfg.lockdownEnabled;
+        var lockdownStartInput = document.getElementById('lockdown-start-input');
+        if (lockdownStartInput && typeof cfg.lockdownStart === 'string') lockdownStartInput.value = cfg.lockdownStart;
+        var lockdownEndInput = document.getElementById('lockdown-end-input');
+        if (lockdownEndInput && typeof cfg.lockdownEnd === 'string') lockdownEndInput.value = cfg.lockdownEnd;
       })
       .catch(function () {});
+  }
+
+  function isValidTimeString(value) {
+    return /^([01]\d|2[0-3]):[0-5]\d$/.test(value || '');
   }
 
   document.getElementById('save-interval-btn').addEventListener('click', function () {
@@ -816,6 +826,46 @@
       .then(function (r) { return r.json(); })
       .then(function () { showNotification('Offline retry interval applied', 'success'); })
       .catch(function () { showNotification('Failed to apply retry interval', 'error'); });
+  });
+
+  document.getElementById('save-lockdown-btn').addEventListener('click', function () {
+    var input = document.getElementById('lockdown-enabled-input');
+    var enabled = !!(input && input.checked);
+    fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lockdownEnabled: enabled }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function () { showNotification('Lockdown mode updated', 'success'); })
+      .catch(function () { showNotification('Failed to update lockdown mode', 'error'); });
+  });
+
+  document.getElementById('save-lockdown-schedule-btn').addEventListener('click', function () {
+    var startInput = document.getElementById('lockdown-start-input');
+    var endInput = document.getElementById('lockdown-end-input');
+    var start = startInput ? String(startInput.value || '').trim() : '';
+    var end = endInput ? String(endInput.value || '').trim() : '';
+    if ((start && !end) || (!start && end)) {
+      showNotification('Set both start and end times, or clear both', 'error');
+      return;
+    }
+    if (start && !isValidTimeString(start)) {
+      showNotification('Start time must be HH:MM (24h)', 'error');
+      return;
+    }
+    if (end && !isValidTimeString(end)) {
+      showNotification('End time must be HH:MM (24h)', 'error');
+      return;
+    }
+    fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lockdownStart: start, lockdownEnd: end }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function () { showNotification('Lockdown schedule updated', 'success'); })
+      .catch(function () { showNotification('Failed to update lockdown schedule', 'error'); });
   });
 
   loadCameras();

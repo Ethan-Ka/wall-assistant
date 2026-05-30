@@ -30,6 +30,8 @@
   var LOW_BATTERY_THRESHOLD = 15;
   var motionClipLoops = 5; // updated from server via WS payload
   var clipPlayState = {}; // slotId → { url, playCount, exhausted }
+  var lockdownEnabled = false;
+  var lockdownSeenBySlot = {}; // slotId → motionClipId
 
   // ── Grid rendering ────────────────────────────────────
 
@@ -398,6 +400,20 @@
   var bodyScrollLock = null;
   var currentOverlaySlotId = null;
 
+  var lockdownOverlay    = document.getElementById('lockdown-overlay');
+  var lockdownImg        = document.getElementById('lockdown-img');
+  var lockdownLiveVideo  = document.getElementById('lockdown-live-video');
+  var lockdownClipVideo  = document.getElementById('lockdown-clip-video');
+  var lockdownBanner     = document.getElementById('lockdown-banner');
+  var lockdownStatus     = document.getElementById('lockdown-status');
+  var lockdownLabel      = document.getElementById('lockdown-label');
+  var lockdownViewBtn    = document.getElementById('lockdown-view-btn');
+  var lockdownDismissBtn = document.getElementById('lockdown-dismiss-btn');
+  var lockdownOverlaySlotId = null;
+  var lockdownOverlayCamIndex = null;
+  var lockdownOverlayMotionId = null;
+  var lockdownViewingClip = false;
+
   var streamStartTime   = null;  // set when HLS stream is live; null otherwise
   var idleTimeoutId     = null;  // fires after IDLE_MS of no activity
   var idleCountdownId   = null;  // fires to auto-close after prompt appears
@@ -556,6 +572,212 @@
     }
   }
 
+  function setLockdownEnabled(enabled) {
+    var wasEnabled = lockdownEnabled;
+    lockdownEnabled = !!enabled;
+    if (lockdownEnabled && !wasEnabled) lockdownSeenBySlot = {};
+    document.body.classList.toggle('lockdown-enabled', lockdownEnabled);
+    if (!lockdownEnabled) closeLockdownOverlay();
+  }
+
+  function formatMotionTime(timestamp) {
+    if (!timestamp) return '';
+    var d = new Date(timestamp);
+    if (!isFinite(d.getTime())) return '';
+    return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  }
+
+  function updateLockdownLabel(data) {
+    if (!lockdownLabel || !data) return;
+    while (lockdownLabel.firstChild) lockdownLabel.removeChild(lockdownLabel.firstChild);
+
+    var nameEl = el('span', 'lockdown-label-name');
+    nameEl.textContent = data.name || 'Camera';
+    lockdownLabel.appendChild(nameEl);
+
+    var timeStr = formatMotionTime(data.motionClipTimestamp);
+    if (timeStr) {
+      var timeEl = el('span', 'lockdown-label-time');
+      timeEl.textContent = 'Motion ' + timeStr;
+      lockdownLabel.appendChild(timeEl);
+    }
+  }
+
+  function setLockdownStatus(text) {
+    if (!lockdownStatus) return;
+    if (text) {
+      lockdownStatus.textContent = text;
+      lockdownStatus.classList.add('visible');
+    } else {
+      lockdownStatus.classList.remove('visible');
+    }
+  }
+
+  function updateLockdownControls(data) {
+    if (!lockdownViewBtn) return;
+    if (lockdownViewingClip) {
+      lockdownViewBtn.textContent = 'Back to Live';
+      lockdownViewBtn.disabled = false;
+      return;
+    }
+    var saved = data && data.motionClipSaved;
+    lockdownViewBtn.textContent = saved ? 'View Motion' : 'Saving Clip...';
+    lockdownViewBtn.disabled = !saved;
+  }
+
+  function stopLockdownStream(camIndex) {
+    if (lockdownLiveVideo) {
+      lockdownLiveVideo.classList.remove('active');
+      detachHls(lockdownLiveVideo);
+    }
+    if (camIndex != null) {
+      fetch('/api/stream/' + camIndex + '/stop', { method: 'POST' }).catch(function () {});
+    }
+  }
+
+  function startLockdownStream(camIndex) {
+    if (!lockdownOverlay || !lockdownOverlay.classList.contains('active')) return;
+    if (lockdownViewingClip) return;
+
+    setLockdownStatus('Starting stream...');
+    fetch('/api/stream/' + camIndex + '/start', { method: 'POST' })
+      .then(function (r) {
+        return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+      })
+      .then(function (resp) {
+        if (lockdownOverlayCamIndex !== camIndex) return;
+        if (!resp.ok) {
+          setLockdownStatus(resp.body.error || 'Stream unavailable');
+          return;
+        }
+        setLockdownStatus('');
+        if (resp.body.hlsUrl) {
+          if (lockdownImg) lockdownImg.style.display = 'none';
+          if (lockdownLiveVideo) {
+            lockdownLiveVideo.classList.add('active');
+            attachHls(lockdownLiveVideo, resp.body.hlsUrl);
+          }
+        }
+      })
+      .catch(function () {
+        if (lockdownOverlayCamIndex === camIndex) setLockdownStatus('Stream unavailable');
+      });
+  }
+
+  function showLockdownClip(data) {
+    var clipId = lockdownOverlayMotionId || (data && data.motionClipId);
+    if (!data || !clipId) return;
+    if (!data.motionClipSaved) return;
+    lockdownViewingClip = true;
+    updateLockdownControls(data);
+    if (lockdownLiveVideo) {
+      lockdownLiveVideo.classList.remove('active');
+      detachHls(lockdownLiveVideo);
+    }
+    if (lockdownOverlayCamIndex != null) {
+      fetch('/api/stream/' + lockdownOverlayCamIndex + '/stop', { method: 'POST' }).catch(function () {});
+    }
+    setLockdownStatus('Loading clip...');
+    if (lockdownClipVideo) {
+      lockdownClipVideo.classList.add('active');
+      lockdownClipVideo.src = '/api/lockdown/events/' + encodeURIComponent(clipId) + '/clip';
+      lockdownClipVideo.play().then(function () {
+        setLockdownStatus('');
+      }).catch(function () {
+        setLockdownStatus('Clip unavailable');
+      });
+    }
+  }
+
+  function showLockdownLive(data) {
+    if (!data) return;
+    lockdownViewingClip = false;
+    if (lockdownClipVideo) {
+      lockdownClipVideo.pause();
+      lockdownClipVideo.classList.remove('active');
+      lockdownClipVideo.removeAttribute('src');
+      lockdownClipVideo.load();
+    }
+    updateLockdownControls(data);
+    startLockdownStream(data.camIndex);
+  }
+
+  function openLockdownOverlay(slotId, motionClipId) {
+    var data = cameraData[slotId];
+    if (!data || !lockdownEnabled) return;
+
+    if (currentOverlaySlotId) closeCameraExpand();
+    if (lockdownOverlayCamIndex != null && lockdownOverlayCamIndex !== data.camIndex) {
+      stopLockdownStream(lockdownOverlayCamIndex);
+    }
+
+    lockdownOverlaySlotId = slotId;
+    lockdownOverlayCamIndex = data.camIndex;
+    lockdownOverlayMotionId = motionClipId || data.motionClipId || null;
+    lockdownViewingClip = false;
+
+    if (lockdownImg) {
+      if (data.url) {
+        lockdownImg.style.display = '';
+        lockdownImg.src = data.url;
+      } else {
+        lockdownImg.style.display = 'none';
+      }
+    }
+    if (lockdownClipVideo) {
+      lockdownClipVideo.pause();
+      lockdownClipVideo.classList.remove('active');
+      lockdownClipVideo.removeAttribute('src');
+      lockdownClipVideo.load();
+    }
+    if (lockdownLiveVideo) {
+      lockdownLiveVideo.classList.remove('active');
+      detachHls(lockdownLiveVideo);
+    }
+
+    updateLockdownLabel(data);
+    updateLockdownControls(data);
+    setLockdownStatus('Starting stream...');
+
+    if (lockdownOverlay) lockdownOverlay.classList.add('active');
+    startLockdownStream(data.camIndex);
+  }
+
+  function closeLockdownOverlay() {
+    var closingCamIndex = lockdownOverlayCamIndex;
+    lockdownOverlaySlotId = null;
+    lockdownOverlayCamIndex = null;
+    lockdownOverlayMotionId = null;
+    lockdownViewingClip = false;
+
+    if (lockdownOverlay) lockdownOverlay.classList.remove('active');
+    if (lockdownLiveVideo) {
+      lockdownLiveVideo.classList.remove('active');
+      detachHls(lockdownLiveVideo);
+    }
+    if (lockdownClipVideo) {
+      lockdownClipVideo.pause();
+      lockdownClipVideo.classList.remove('active');
+      lockdownClipVideo.removeAttribute('src');
+      lockdownClipVideo.load();
+    }
+    if (lockdownImg) lockdownImg.style.display = '';
+    setLockdownStatus('');
+
+    if (closingCamIndex != null) {
+      fetch('/api/stream/' + closingCamIndex + '/stop', { method: 'POST' }).catch(function () {});
+    }
+  }
+
+  function handleLockdownMotion(cam, data) {
+    if (!lockdownEnabled || !cam || !data) return;
+    if (!cam.motionClipId || cam.lowBattery) return;
+    if (lockdownSeenBySlot[cam.slotId] === cam.motionClipId) return;
+
+    lockdownSeenBySlot[cam.slotId] = cam.motionClipId;
+    openLockdownOverlay(cam.slotId, cam.motionClipId);
+  }
+
   function formatCameraAge(updatedAt) {
     if (!updatedAt) return '';
     var timestamp = new Date(updatedAt).getTime();
@@ -616,11 +838,40 @@
     e.stopPropagation();
     resetIdleTimer();
   };
+  if (lockdownDismissBtn) {
+    lockdownDismissBtn.onclick = function (e) {
+      e.stopPropagation();
+      closeLockdownOverlay();
+    };
+  }
+  if (lockdownViewBtn) {
+    lockdownViewBtn.onclick = function (e) {
+      e.stopPropagation();
+      if (!lockdownOverlaySlotId) return;
+      var data = cameraData[lockdownOverlaySlotId];
+      if (!data) return;
+      if (lockdownViewingClip) showLockdownLive(data);
+      else showLockdownClip(data);
+    };
+  }
+  if (lockdownLiveVideo) {
+    lockdownLiveVideo.addEventListener('error', function () {
+      setLockdownStatus('Stream unavailable');
+    });
+  }
+  if (lockdownClipVideo) {
+    lockdownClipVideo.addEventListener('error', function () {
+      setLockdownStatus('Clip unavailable');
+    });
+  }
   // Any interaction resets the idle timer while the overlay is open
   document.addEventListener('click',      function () { if (currentOverlaySlotId) resetIdleTimer(); });
   document.addEventListener('touchstart', function () { if (currentOverlaySlotId) resetIdleTimer(); }, { passive: true });
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape') closeCameraExpand();
+    if (e.key === 'Escape') {
+      if (lockdownOverlay && lockdownOverlay.classList.contains('active')) closeLockdownOverlay();
+      if (currentOverlaySlotId) closeCameraExpand();
+    }
   });
 
   installScrollLockFallback();
@@ -847,6 +1098,9 @@
         url:             cam.snapshotUrl || prev.url || null,
         streamUrl:       cam.streamUrl || null,
         motionClipUrl:   cam.motionClipUrl || null,
+        motionClipId:    cam.motionClipId || null,
+        motionClipTimestamp: cam.motionClipTimestamp || null,
+        motionClipSaved: cam.motionClipSaved != null ? !!cam.motionClipSaved : (prev.motionClipSaved || false),
         battery:         cam.battery != null ? cam.battery : (prev.battery != null ? prev.battery : null),
         lowBattery:      !!cam.lowBattery,
         streamStoppedAt: streamStoppedAt,
@@ -946,6 +1200,13 @@
       }
 
       updateCameraLabel(labelEl, cameraData[slotId]);
+
+      if (lockdownOverlaySlotId === slotId) {
+        updateLockdownLabel(cameraData[slotId]);
+        updateLockdownControls(cameraData[slotId]);
+      }
+
+      handleLockdownMotion(cam, cameraData[slotId]);
     });
 
     refreshCameraAges();
@@ -1173,6 +1434,7 @@
         var data = JSON.parse(evt.data);
         if (data.type === 'layout') renderLayout(data.layout);
         if (data.type === 'update') {
+          if (data.lockdownEnabled != null) setLockdownEnabled(!!data.lockdownEnabled);
           if (data.motionClipLoops >= 1) motionClipLoops = data.motionClipLoops;
           try { if (data.temperature) updateTemperature(data.temperature); } catch (err) { reportClientError('temperature', err.message || 'Update failed'); }
           try { if (data.cameras) updateCameras(data.cameras); } catch (err) { reportClientError('cameras', err.message || 'Update failed'); }

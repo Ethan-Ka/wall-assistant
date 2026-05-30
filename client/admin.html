@@ -91,6 +91,24 @@
             <button class="btn btn-primary btn-sm" id="save-offline-retry-btn">Apply</button>
           </div>
         </div>
+        <div class="server-setting-row">
+          <label for="lockdown-enabled-input">Lockdown Mode</label>
+          <div class="server-setting-controls">
+            <input type="checkbox" id="lockdown-enabled-input">
+            <span class="server-setting-unit">Enabled</span>
+            <button class="btn btn-primary btn-sm" id="save-lockdown-btn">Apply</button>
+          </div>
+        </div>
+        <div class="server-setting-row">
+          <label for="lockdown-start-input">Lockdown Schedule</label>
+          <div class="server-setting-controls">
+            <input type="time" id="lockdown-start-input" step="60">
+            <span class="server-setting-unit">to</span>
+            <input type="time" id="lockdown-end-input" step="60">
+            <span class="server-setting-unit">local time</span>
+            <button class="btn btn-primary btn-sm" id="save-lockdown-schedule-btn">Apply</button>
+          </div>
+        </div>
       </div>
     </aside>
   </div>

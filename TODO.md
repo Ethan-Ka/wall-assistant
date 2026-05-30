@@ -2,11 +2,7 @@
 
 # Claude Code
 
-instead of warning every time a snapshot fails to load, just do a "dropped snapshots counter" and then focus on the real errors
-
-priority of motion detected video snapshots, and the very last image of a livestream
-
-Lockdown mode where if motion is detected it opens the livestream and flashes red
+COMMANDS FOR CLI
 
 ## Status key
 - [x] Done

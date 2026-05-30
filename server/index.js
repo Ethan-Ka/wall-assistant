@@ -7,11 +7,15 @@ const fs = require('fs');
 require('dotenv').config({ path: require('path').join(__dirname, '../.env') });
 
 const http = require('http');
+const https = require('https');
 const path = require('path');
 const express = require('express');
 const WebSocket = require('ws');
 
 const SETTINGS_PATH = path.join(__dirname, '../settings.json');
+const MOTION_ARCHIVE_DIR = path.join(__dirname, '../motion-archive');
+const MOTION_ARCHIVE_INDEX = path.join(MOTION_ARCHIVE_DIR, 'index.json');
+const MOTION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 const isDashboardEnabled = process.stdout.isTTY && process.stderr.isTTY;
 const originalConsole = {
@@ -32,12 +36,24 @@ const dashboardState = {
   clientErrors: [],
 };
 
+const motionArchiveById = new Map();
+const motionSaveInFlight = new Set();
+let motionArchive = { events: [] };
+let lockdownEnabled = false;
+
 const logBuffer = [];
 const MAX_LOG_LINES = 12;
 const MAX_CLIENT_ERRORS = 8;
 let renderQueued = false;
 let nextClientId = 1;
 const clientMetadata = new Map();
+
+const cliState = {
+  enabled: false,
+  buffer: '',
+  lastOutput: [],
+  lastError: false,
+};
 
 const GRAPH_SAMPLES = 30;
 let requestsInInterval = 0;
@@ -74,7 +90,7 @@ console.info = (...args) => pushLog('log', args);
 console.warn = (...args) => pushLog('warn', args);
 console.error = (...args) => pushLog('error', args);
 
-const { initRing, getRingSnapshot, getMotionClipUrl, getCameraList, getCameras, isCameraLowBattery, isCameraOnline, getCameraBattery, hasRecentMotionClip, takeSnapshot, retryCamera, setOfflineRetryMs, getOfflineRetryMs } = require('./ring');
+const { initRing, getRingSnapshot, getMotionClipUrl, getMotionClipInfo, getCameraList, getCameras, isCameraLowBattery, isCameraOnline, getCameraBattery, hasRecentMotionClip, getLastMotionEvents, takeSnapshot, retryCamera, setOfflineRetryMs, getOfflineRetryMs } = require('./ring');
 const { initHls, startStream, stopStream, getHlsUrl, getHlsDir } = require('./hls');
 const { initEcobee } = require('./ecobee');
 const { getTemperature } = require('./temperature');
@@ -108,15 +124,59 @@ function dimColor(text) {
   return color('90', text);
 }
 
+const ANSI_PATTERN = /\u001b\[[0-9;]*m/g;
+
+function getTerminalWidth() {
+  if (process.stdout && typeof process.stdout._refreshSize === 'function') {
+    process.stdout._refreshSize();
+  }
+  const windowSize = typeof process.stdout.getWindowSize === 'function'
+    ? process.stdout.getWindowSize()
+    : null;
+  const stdoutWidth = windowSize && windowSize[0] ? windowSize[0] : process.stdout.columns;
+  const stderrWidth = process.stderr && process.stderr.columns ? process.stderr.columns : 0;
+  const envWidth = Number.parseInt(process.env.COLUMNS, 10);
+  const envWidthSafe = Number.isFinite(envWidth) ? envWidth : 0;
+  return Math.max(stdoutWidth || stderrWidth || envWidthSafe || 100, 20);
+}
+
+function visibleLength(text) {
+  return text.replace(ANSI_PATTERN, '').length;
+}
+
+function sliceVisible(text, width) {
+  if (width <= 0) return '';
+  let visible = 0;
+  let out = '';
+  for (let i = 0; i < text.length;) {
+    const ch = text[i];
+    if (ch === '\u001b' && text[i + 1] === '[') {
+      const match = text.slice(i).match(/^\u001b\[[0-9;]*m/);
+      if (match) {
+        out += match[0];
+        i += match[0].length;
+        continue;
+      }
+    }
+    if (visible + 1 > width) break;
+    out += ch;
+    visible += 1;
+    i += 1;
+  }
+  return out;
+}
+
 function truncate(text, width) {
-  if (text.length <= width) return text;
-  if (width <= 1) return text.slice(0, width);
-  return text.slice(0, width - 1) + '…';
+  const len = visibleLength(text);
+  if (len <= width) return text;
+  if (width <= 1) return '…';
+  return sliceVisible(text, width - 1) + '…\u001b[0m';
 }
 
 function padRight(text, width) {
-  if (text.length >= width) return text;
-  return text + ' '.repeat(width - text.length);
+  const len = visibleLength(text);
+  if (len >= width) return text;
+  return text + ' '.repeat(width - len);
 }
 
 function sparkline(data, width) {
@@ -127,7 +187,7 @@ function sparkline(data, width) {
   return bar.padStart(width, ' ');
 }
 
-function getDisplayLines() {
+function getDisplayLines(termWidth = getTerminalWidth()) {
   const layout = currentLayout || { grid: { cols: 0, rows: 0 }, slots: [] };
   const cameraList = getCameraList();
   const wsCount = wss ? wss.clients.size : 0;
@@ -146,11 +206,40 @@ function getDisplayLines() {
     ? `${color('1;34', `http://localhost:${PORT}`)}  |  ${color('1;34', `http://${localIp}:${PORT}`)}`
     : color('1;34', `http://localhost:${PORT}`);
   lines.push(`${urlPart}  |  uptime ${color('1;36', `${uptimeSeconds}s`)}  |  ws clients ${color('1;36', String(wsCount))}`);
-  lines.push(`ring ${statusColor(dashboardState.ringReady, dashboardState.ringReady ? 'ready' : 'starting')}  |  ecobee ${statusColor(dashboardState.ecobeeReady, dashboardState.ecobeeReady ? 'ready' : 'starting')}  |  hls ${color('1;32', 'on-demand')}`);
+  const ringOnline = cameraList.filter((c) => c.online !== false).length;
+  const ringStatus = !dashboardState.ringReady
+    ? color('1;33', 'starting')
+    : cameraList.length > 0 && ringOnline > 0
+      ? color('1;32', 'connected')
+      : dimColor('ready');
+  const ecobeeStatus = !dashboardState.ecobeeReady ? color('1;33', 'starting') : dimColor('ready');
+  lines.push(`ring ${ringStatus}  |  ecobee ${ecobeeStatus}  |  hls ${dimColor('on-demand')}`);
   lines.push(`layout ${color('1;36', `${layout.slots.length} slots`)} (${dimColor(`${layout.grid.cols}x${layout.grid.rows}`)})  |  last payload ${lastPayload === 'waiting' ? color('1;33', lastPayload) : color('1;32', lastPayload)}  |  last client event ${lastEvent === 'none' ? color('90', lastEvent) : color('1;32', lastEvent)}`);
   if (dashboardState.lastPayloadError) {
     lines.push(color('1;31', `payload status: ${dashboardState.lastPayloadError}`));
   }
+  lines.push('');
+  lines.push(color('1;33', 'last motion event'));
+  const motionEvents = getLastMotionEvents();
+  if (motionEvents.length) {
+    const latestEvent = motionEvents
+      .filter((ev) => ev.timestamp)
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
+    if (!latestEvent) {
+      lines.push(dimColor('no motion detected yet'));
+    } else {
+      const eventTime = new Date(latestEvent.timestamp);
+      const ageMs = Date.now() - eventTime.getTime();
+      const ageMin = Math.floor(ageMs / 60000);
+      const ageSec = Math.floor((ageMs % 60000) / 1000);
+      const ageStr = ageMin > 0 ? `${ageMin}m ${ageSec}s ago` : `${ageSec}s ago`;
+      const activeStr = latestEvent.active ? color('1;33', '  |  clip pending') : '';
+      lines.push(`camera ${color('1;36', String(latestEvent.index))}: ${latestEvent.name}  |  ${eventTime.toLocaleTimeString()}  |  ${dimColor(ageStr)}${activeStr}`);
+    }
+  } else {
+    lines.push('no Ring cameras detected yet');
+  }
+
   lines.push('');
   lines.push(color('1;33', 'connected devices'));
   if (cameraList.length) {
@@ -198,7 +287,6 @@ function getDisplayLines() {
 
   lines.push('');
   lines.push(color('1;33', 'metrics'));
-  const termWidth = Math.max(process.stdout.columns || 100, 60);
   const graphWidth = Math.min(GRAPH_SAMPLES, Math.max(20, termWidth - 30));
   const totalDropped = lastTotalDropped;
   const latestReq = requestsHistory[requestsHistory.length - 1] || 0;
@@ -229,8 +317,8 @@ function getDisplayLines() {
 function renderDashboard() {
   if (!isDashboardEnabled) return;
 
-  const width = Math.max(process.stdout.columns || 100, 60);
-  const lines = getDisplayLines().map((line) => truncate(line, width - 1));
+  const width = getTerminalWidth();
+  const lines = getDisplayLines(width).map((line) => truncate(line, width - 2));
 
   readline.cursorTo(process.stdout, 0, 0);
   readline.clearScreenDown(process.stdout);
@@ -251,6 +339,144 @@ function scheduleRender() {
     renderQueued = false;
     renderDashboard();
   }, 50);
+}
+
+function loadMotionArchive() {
+  try {
+    const raw = fs.readFileSync(MOTION_ARCHIVE_INDEX, 'utf8');
+    const parsed = JSON.parse(raw);
+    motionArchive = parsed && Array.isArray(parsed.events) ? parsed : { events: [] };
+  } catch (_) {
+    motionArchive = { events: [] };
+  }
+
+  motionArchiveById.clear();
+  motionArchive.events.forEach((ev) => {
+    if (ev && ev.id) motionArchiveById.set(ev.id, ev);
+  });
+}
+
+function persistMotionArchive() {
+  try {
+    fs.mkdirSync(MOTION_ARCHIVE_DIR, { recursive: true });
+    fs.writeFileSync(MOTION_ARCHIVE_INDEX, JSON.stringify(motionArchive, null, 2) + '\n', 'utf8');
+  } catch (e) {
+    console.error('[lockdown] Failed to persist motion archive:', e.message);
+  }
+}
+
+function motionClipId(info) {
+  if (!info || !info.dingId || !info.timestamp) return null;
+  return `${info.dingId}:${info.timestamp}`;
+}
+
+function sanitizeTimestamp(value) {
+  return String(value || '').replace(/[:.]/g, '-');
+}
+
+function downloadClip(url, destPath, redirects = 0) {
+  return new Promise((resolve, reject) => {
+    if (redirects > 3) return reject(new Error('Too many redirects'));
+    const client = url.startsWith('https:') ? https : http;
+    const req = client.get(url, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        const nextUrl = new URL(res.headers.location, url).toString();
+        return resolve(downloadClip(nextUrl, destPath, redirects + 1));
+      }
+      if (res.statusCode !== 200) {
+        res.resume();
+        return reject(new Error(`HTTP ${res.statusCode}`));
+      }
+      const file = fs.createWriteStream(destPath);
+      res.pipe(file);
+      file.on('finish', () => {
+        file.close(() => resolve());
+      });
+      file.on('error', (err) => {
+        file.close(() => {
+          try { fs.unlinkSync(destPath); } catch (_) {}
+          reject(err);
+        });
+      });
+    });
+    req.on('error', reject);
+  });
+}
+
+function queueMotionClipSave(camIndex, camName, clipInfo, clipUrl) {
+  const clipId = motionClipId(clipInfo);
+  if (!clipId || !clipUrl) return;
+  if (motionArchiveById.has(clipId) || motionSaveInFlight.has(clipId)) return;
+
+  motionSaveInFlight.add(clipId);
+  const safeStamp = sanitizeTimestamp(clipInfo.timestamp);
+  const fileName = `cam-${camIndex}-${safeStamp}-${clipInfo.dingId}.mp4`;
+  const filePath = path.join(MOTION_ARCHIVE_DIR, fileName);
+
+  try { fs.mkdirSync(MOTION_ARCHIVE_DIR, { recursive: true }); } catch (_) {}
+
+  downloadClip(clipUrl, filePath)
+    .then(() => {
+      let size = null;
+      try { size = fs.statSync(filePath).size; } catch (_) {}
+      const event = {
+        id: clipId,
+        dingId: clipInfo.dingId,
+        timestamp: clipInfo.timestamp,
+        cameraIndex: camIndex,
+        cameraName: camName || `Camera ${camIndex}`,
+        fileName,
+        size,
+        savedAt: new Date().toISOString(),
+      };
+      motionArchive.events.push(event);
+      motionArchiveById.set(clipId, event);
+      persistMotionArchive();
+      console.log(`[lockdown] Saved motion clip ${clipId} (${fileName})`);
+    })
+    .catch((e) => {
+      try { fs.unlinkSync(filePath); } catch (_) {}
+      console.warn(`[lockdown] Failed to save motion clip ${clipId}: ${e.message}`);
+    })
+    .finally(() => {
+      motionSaveInFlight.delete(clipId);
+    });
+}
+
+function cleanupMotionArchive() {
+  if (!motionArchive.events.length) return;
+
+  const now = Date.now();
+  const latest = motionArchive.events.reduce((max, ev) => {
+    const stamp = Date.parse(ev.timestamp || ev.savedAt || '');
+    return isNaN(stamp) ? max : Math.max(max, stamp);
+  }, 0);
+
+  // Only prune when there has been motion activity in the last 30 days.
+  if (!latest || (now - latest) > MOTION_RETENTION_MS) return;
+
+  const cutoff = now - MOTION_RETENTION_MS;
+  const keep = [];
+  const remove = [];
+
+  motionArchive.events.forEach((ev) => {
+    const stamp = Date.parse(ev.timestamp || ev.savedAt || '');
+    if (!isNaN(stamp) && stamp < cutoff) remove.push(ev);
+    else keep.push(ev);
+  });
+
+  if (!remove.length) return;
+  remove.forEach((ev) => {
+    if (!ev || !ev.fileName) return;
+    try { fs.unlinkSync(path.join(MOTION_ARCHIVE_DIR, ev.fileName)); } catch (_) {}
+  });
+
+  motionArchive.events = keep;
+  motionArchiveById.clear();
+  keep.forEach((ev) => { if (ev && ev.id) motionArchiveById.set(ev.id, ev); });
+  persistMotionArchive();
+  console.log(`[lockdown] Pruned ${remove.length} motion clip(s) beyond retention window`);
 }
 
 function recordClientError(metadata, payload) {
@@ -286,7 +512,47 @@ try {
 let updateIntervalMs = (serverSettings.updateIntervalMs >= 1000)   ? serverSettings.updateIntervalMs : 3000;
 let motionClipLoops  = (serverSettings.motionClipLoops  >= 1)      ? serverSettings.motionClipLoops  : 5;
 if (serverSettings.offlineRetryMs >= 60000) setOfflineRetryMs(serverSettings.offlineRetryMs);
+if (typeof serverSettings.lockdownEnabled === 'boolean') lockdownEnabled = serverSettings.lockdownEnabled;
+let lockdownStart = normalizeTimeString(serverSettings.lockdownStart);
+if (lockdownStart == null) lockdownStart = '';
+let lockdownEnd = normalizeTimeString(serverSettings.lockdownEnd);
+if (lockdownEnd == null) lockdownEnd = '';
 let broadcastIntervalId = null;
+
+function normalizeTimeString(value) {
+  if (value == null) return null;
+  const trimmed = String(value).trim();
+  if (trimmed === '') return '';
+  const match = trimmed.match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+  if (!match) return null;
+  return `${match[1]}:${match[2]}`;
+}
+
+function minutesFromTime(value) {
+  const match = value && value.match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+  if (!match) return null;
+  return (parseInt(match[1], 10) * 60) + parseInt(match[2], 10);
+}
+
+function isWithinLockdownWindow(now) {
+  const startMinutes = minutesFromTime(lockdownStart);
+  const endMinutes = minutesFromTime(lockdownEnd);
+  if (startMinutes == null || endMinutes == null) return true;
+  if (startMinutes === endMinutes) return true;
+
+  const currentMinutes = (now.getHours() * 60) + now.getMinutes();
+  if (startMinutes < endMinutes) {
+    return currentMinutes >= startMinutes && currentMinutes < endMinutes;
+  }
+  return currentMinutes >= startMinutes || currentMinutes < endMinutes;
+}
+
+function getEffectiveLockdownEnabled() {
+  return lockdownEnabled && isWithinLockdownWindow(new Date());
+}
+
+loadMotionArchive();
+cleanupMotionArchive();
 
 let currentLayout = readLayout();
 
@@ -362,11 +628,25 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.get('/api/config', (_req, res) => {
-  res.json({ updateIntervalMs, motionClipLoops, offlineRetryMs: getOfflineRetryMs() });
+  res.json({
+    updateIntervalMs,
+    motionClipLoops,
+    offlineRetryMs: getOfflineRetryMs(),
+    lockdownEnabled,
+    lockdownStart,
+    lockdownEnd,
+  });
 });
 
 app.post('/api/config', (req, res) => {
-  const { updateIntervalMs: newInterval, motionClipLoops: newLoops, offlineRetryMs: newOfflineRetry } = req.body;
+  const {
+    updateIntervalMs: newInterval,
+    motionClipLoops: newLoops,
+    offlineRetryMs: newOfflineRetry,
+    lockdownEnabled: newLockdownEnabled,
+    lockdownStart: newLockdownStart,
+    lockdownEnd: newLockdownEnd,
+  } = req.body;
   if (newInterval != null) {
     const ms = parseInt(newInterval, 10);
     if (isNaN(ms) || ms < 1000 || ms > 60000) {
@@ -393,14 +673,57 @@ app.post('/api/config', (req, res) => {
     setOfflineRetryMs(ms);
     serverSettings.offlineRetryMs = ms;
   }
-  if (newInterval != null || newLoops != null || newOfflineRetry != null) {
+  if (newLockdownEnabled != null) {
+    lockdownEnabled = !!newLockdownEnabled;
+    serverSettings.lockdownEnabled = lockdownEnabled;
+  }
+  if (newLockdownStart != null) {
+    const nextStart = normalizeTimeString(newLockdownStart);
+    if (nextStart == null) {
+      return res.status(400).json({ error: 'lockdownStart must be in HH:MM 24h format' });
+    }
+    lockdownStart = nextStart;
+    serverSettings.lockdownStart = lockdownStart;
+  }
+  if (newLockdownEnd != null) {
+    const nextEnd = normalizeTimeString(newLockdownEnd);
+    if (nextEnd == null) {
+      return res.status(400).json({ error: 'lockdownEnd must be in HH:MM 24h format' });
+    }
+    lockdownEnd = nextEnd;
+    serverSettings.lockdownEnd = lockdownEnd;
+  }
+  if (newInterval != null || newLoops != null || newOfflineRetry != null || newLockdownEnabled != null || newLockdownStart != null || newLockdownEnd != null) {
     try {
       fs.writeFileSync(SETTINGS_PATH, JSON.stringify(serverSettings, null, 2) + '\n', 'utf8');
     } catch (e) {
       console.error('[config] Failed to persist settings:', e.message);
     }
   }
-  res.json({ ok: true, updateIntervalMs, motionClipLoops, offlineRetryMs: getOfflineRetryMs() });
+  res.json({
+    ok: true,
+    updateIntervalMs,
+    motionClipLoops,
+    offlineRetryMs: getOfflineRetryMs(),
+    lockdownEnabled,
+    lockdownStart,
+    lockdownEnd,
+  });
+});
+
+app.get('/api/lockdown/events/:id/clip', (req, res) => {
+  const eventId = req.params.id;
+  const entry = motionArchiveById.get(eventId);
+  if (!entry || !entry.fileName) {
+    return res.status(404).json({ error: 'Clip not found' });
+  }
+  res.set('Cache-Control', 'no-store');
+  res.sendFile(entry.fileName, {
+    root: MOTION_ARCHIVE_DIR,
+    headers: { 'Content-Type': 'video/mp4' },
+  }, (err) => {
+    if (err && !res.headersSent) res.status(404).end();
+  });
 });
 
 app.get('/api/spotify', async (_req, res) => {
@@ -508,6 +831,7 @@ const wss = new WebSocket.Server({
 });
 
 async function buildPayload() {
+  const lockdownActive = getEffectiveLockdownEnabled();
   const cameraSlots = currentLayout.slots.filter((s) => s.type === 'camera');
 
   const cameras = await Promise.all(
@@ -516,8 +840,14 @@ async function buildPayload() {
 
       // getRingSnapshot is sync — reads from the scheduled cache (5s), never wakes the camera
       const snap = getRingSnapshot(camIndex);
+      const motionClipInfo = getMotionClipInfo(camIndex);
       const motionClipUrl = await getMotionClipUrl(camIndex);
+      const clipId = motionClipId(motionClipInfo);
       const streamUrl = getHlsUrl(camIndex);
+
+      if (lockdownActive && motionClipInfo && motionClipUrl) {
+        queueMotionClipSave(camIndex, snap.name, motionClipInfo, motionClipUrl);
+      }
 
       return {
         slotId:        slot.id,
@@ -531,6 +861,9 @@ async function buildPayload() {
           : `/api/snapshot/${camIndex}?t=${encodeURIComponent(snap.lastUpdated)}`,
         snapshotAge:   snap.lastUpdated,
         motionClipUrl: motionClipUrl || null,
+        motionClipId:  clipId || null,
+        motionClipTimestamp: motionClipInfo ? motionClipInfo.timestamp : null,
+        motionClipSaved: clipId ? motionArchiveById.has(clipId) : false,
         battery:       getCameraBattery(camIndex),
         lowBattery:    isCameraLowBattery(camIndex),
         online:        isCameraOnline(camIndex),
@@ -593,7 +926,7 @@ async function buildPayload() {
   const hasNowPlaying = currentLayout.slots.some((s) => s.type === 'nowplaying');
   const spotify = hasNowPlaying ? await getNowPlaying() : undefined;
 
-  return JSON.stringify({ type: 'update', temperature, cameras, stocks, headlines, iss, sports, nowplaying: spotify, spotify, motionClipLoops });
+  return JSON.stringify({ type: 'update', temperature, cameras, stocks, headlines, iss, sports, nowplaying: spotify, spotify, motionClipLoops, lockdownEnabled: lockdownActive });
 }
 
 wss.on('connection', (ws, req) => {
@@ -656,6 +989,8 @@ function startBroadcastInterval() {
 
 startBroadcastInterval();
 
+setInterval(cleanupMotionArchive, 12 * 60 * 60 * 1000);
+
 setInterval(() => {
   requestsHistory.push(requestsInInterval);
   requestsInInterval = 0;
@@ -694,5 +1029,8 @@ server.listen(PORT, async () => {
 });
 
 if (isDashboardEnabled) {
+  process.stdout.on('resize', () => {
+    scheduleRender();
+  });
   renderDashboard();
 }

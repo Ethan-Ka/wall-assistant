@@ -15,6 +15,23 @@
 <body>
   <div class="grid" id="grid"></div>
 
+  <div class="lockdown-ring" id="lockdown-ring"></div>
+
+  <div class="lockdown-overlay" id="lockdown-overlay">
+    <img class="lockdown-img" id="lockdown-img" src="" alt="">
+    <video class="lockdown-video lockdown-live-video" id="lockdown-live-video"
+           autoplay muted playsinline></video>
+    <video class="lockdown-video lockdown-clip-video" id="lockdown-clip-video"
+           controls muted playsinline></video>
+    <div class="lockdown-banner" id="lockdown-banner">Motion detected</div>
+    <div class="lockdown-status" id="lockdown-status"></div>
+    <div class="lockdown-label" id="lockdown-label"></div>
+    <div class="lockdown-controls">
+      <button class="lockdown-btn lockdown-btn-secondary" id="lockdown-view-btn">View Motion</button>
+      <button class="lockdown-btn lockdown-btn-primary" id="lockdown-dismiss-btn">Dismiss</button>
+    </div>
+  </div>
+
   <!-- Full-screen camera expand overlay — singleton outside the grid -->
   <div class="camera-expand-overlay" id="camera-overlay">
     <img class="camera-expand-img" id="camera-overlay-img" src="" alt="">
