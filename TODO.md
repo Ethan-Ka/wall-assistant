@@ -6,6 +6,8 @@ COMMANDS FOR CLI
 
 add options to turn on floodlights, siren, other features.
 
+Make graph one that works on windows 10 CMD
+
 ## Status key
 - [x] Done
 - [ ] Todo
