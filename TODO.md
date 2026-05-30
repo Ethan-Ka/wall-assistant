@@ -8,6 +8,8 @@ add options to turn on floodlights, siren, other features.
 
 Make graph one that works on windows 10 CMD
 
+add server display for lockdown mode/when scheduled/status
+
 ## Status key
 - [x] Done
 - [ ] Todo
