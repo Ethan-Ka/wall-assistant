@@ -4,6 +4,8 @@
 
 COMMANDS FOR CLI
 
+add options to turn on floodlights, siren, other features.
+
 ## Status key
 - [x] Done
 - [ ] Todo
