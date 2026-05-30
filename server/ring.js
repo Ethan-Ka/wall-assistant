@@ -12,6 +12,7 @@ const RECORDING_DELAY_MS       = 25 * 1000;       // wait for Ring to transcode 
 const URL_TTL_MS               = 45 * 60 * 1000;  // refresh pre-signed URL before 1hr expiry
 const LOW_BATTERY_THRESHOLD    = 15;              // suspend all camera requests below this %
 const BATTERY_RESUME_THRESHOLD = 20;             // resume requests at or above this % (hysteresis)
+let offlineRetryMs             = 30 * 60 * 1000; // retry offline cameras every 30 minutes (configurable)
 
 const PLACEHOLDER_SNAPSHOT = Buffer.from(
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" role="img" aria-label="Camera unavailable"><rect width="640" height="360" fill="#121417"/><rect x="42" y="42" width="556" height="276" rx="24" fill="#1b2026" stroke="#2b323b" stroke-width="4"/><circle cx="320" cy="180" r="54" fill="none" stroke="#4b5563" stroke-width="10"/><path d="M275 180h90" stroke="#4b5563" stroke-width="10" stroke-linecap="round"/><path d="M320 135v90" stroke="#4b5563" stroke-width="10" stroke-linecap="round"/><text x="320" y="254" fill="#9ca3af" font-family="Arial, sans-serif" font-size="24" text-anchor="middle">Snapshot unavailable</text></svg>',
@@ -28,6 +29,11 @@ const snapshotDropped   = {}; // index → number of failed fetches since server
 // Per-camera battery state
 const batteryLevels  = {}; // index → number (0-100) or null (wired/unknown)
 const batteryLowFlag = {}; // index → true when suspended due to low battery
+
+// Per-camera online/offline state
+// onlineStatus: true = confirmed online, false = offline (backoff active), undefined = unknown (first attempt pending)
+const onlineStatus   = {}; // index → true | false | undefined
+const offlineRetryAt = {}; // index → ms timestamp after which next snapshot attempt is allowed
 
 // Per-camera motion state
 // { dingId, url, urlFetchedAt (ms), timestamp (ISO ding event time) }
@@ -47,19 +53,62 @@ function persistToken(token) {
 
 async function doScheduledSnapshot(cam, index) {
   if (batteryLowFlag[index]) return; // suspended — avoid waking a low-battery camera
+
+  if (onlineStatus[index] === false) {
+    const now = Date.now();
+    if (offlineRetryAt[index] && now < offlineRetryAt[index]) return;
+    // Proactively advance the timer so concurrent interval ticks don't all pile in
+    offlineRetryAt[index] = now + offlineRetryMs;
+  }
+
   try {
     const requestedAt = new Date().toISOString();
     const buffer = await cam.getSnapshot();
     snapshotBuffers[index]   = buffer;
     snapshotTimestamp[index] = requestedAt;
+    if (onlineStatus[index] !== true) {
+      onlineStatus[index] = true;
+      console.log(`[ring] Camera ${index} is online`);
+    }
   } catch (e) {
     snapshotDropped[index] = (snapshotDropped[index] || 0) + 1;
+    if (onlineStatus[index] !== false) {
+      onlineStatus[index] = false;
+      offlineRetryAt[index] = Date.now() + offlineRetryMs;
+      console.warn(`[ring] Camera ${index} offline — snapshot suspended, retry in 30 min`);
+    }
   }
 }
 
 function startSnapshotSchedule(cam, index) {
   doScheduledSnapshot(cam, index); // immediate first shot
   setInterval(() => doScheduledSnapshot(cam, index), SNAPSHOT_INTERVAL_MS);
+}
+
+function subscribeConnectivity(cam, index) {
+  // Seed from the current push-cached value so the gate is active before the first snapshot
+  onlineStatus[index] = !cam.isOffline;
+  if (onlineStatus[index] === false) {
+    offlineRetryAt[index] = Date.now() + offlineRetryMs;
+    console.warn(`[ring] Camera ${index} starts offline — snapshot suspended, retry in 30 min`);
+  }
+
+  // Watch for Ring-pushed connectivity transitions. The subscription's only role is fast
+  // recovery: when the camera comes back online it clears the backoff so the next scheduled
+  // tick (or an immediate attempt) doesn't have to wait out the 30-min window.
+  // doScheduledSnapshot remains the single authority that writes onlineStatus.
+  let prevOffline = cam.isOffline;
+  cam.onData.subscribe((data) => {
+    const isNowOffline = data.alerts && data.alerts.connection === 'offline';
+    if (isNowOffline === prevOffline) return;
+    prevOffline = isNowOffline;
+
+    if (!isNowOffline && onlineStatus[index] === false) {
+      // Camera came back — clear the backoff and let the next snapshot attempt confirm it
+      offlineRetryAt[index] = null;
+      doScheduledSnapshot(cam, index);
+    }
+  });
 }
 
 function subscribeBattery(cam, index) {
@@ -99,17 +148,25 @@ function subscribeMotion(cam, index) {
     // Ring needs time to transcode before the recording URL resolves
     setTimeout(async () => {
       if (batteryLowFlag[index]) return; // recheck — battery may have dipped during the delay
-      try {
-        const url = await cam.getRecordingUrl(String(dingId));
-        motionClips[index] = {
-          dingId:       String(dingId),
-          url,
-          urlFetchedAt: Date.now(),
-          timestamp:    motionTimestamp,
-        };
-        console.log(`[ring] Motion clip ready for cam ${index}`);
-      } catch (e) {
-        console.error(`[ring] Failed to fetch recording for cam ${index}: ${e.message}`);
+      const delays = [0, 15_000, 30_000]; // retry at +0s, +15s, +30s after initial wait
+      for (const delay of delays) {
+        if (delay) await new Promise(r => setTimeout(r, delay));
+        if (batteryLowFlag[index]) return;
+        try {
+          const url = await cam.getRecordingUrl(String(dingId));
+          motionClips[index] = {
+            dingId:       String(dingId),
+            url,
+            urlFetchedAt: Date.now(),
+            timestamp:    motionTimestamp,
+          };
+          console.log(`[ring] Motion clip ready for cam ${index}`);
+          return;
+        } catch (e) {
+          if (delay === delays[delays.length - 1]) {
+            console.error(`[ring] Failed to fetch recording for cam ${index} after retries: ${e.message}`);
+          }
+        }
       }
     }, RECORDING_DELAY_MS);
   });
@@ -143,6 +200,7 @@ async function initRing(config) {
         console.warn(`[ring] Camera ${index} starts with low battery (${batteryLevels[index]}%) — requests suspended`);
       }
 
+      subscribeConnectivity(cam, index); // must run before startSnapshotSchedule seeds the gate
       startSnapshotSchedule(cam, index);
       subscribeMotion(cam, index);
       subscribeBattery(cam, index);
@@ -193,13 +251,23 @@ async function getMotionClipUrl(cameraIndex) {
 function getCameraList() {
   return cameras.map((cam, index) => ({
     index,
-    id:         cam.id,
-    name:       cam.name,
-    kind:       cam.deviceType,
-    dropped:    snapshotDropped[index] || 0,
-    battery:    batteryLevels[index] != null ? batteryLevels[index] : null,
-    lowBattery: batteryLowFlag[index] || false,
+    id:             cam.id,
+    name:           cam.name,
+    kind:           cam.deviceType,
+    dropped:        snapshotDropped[index] || 0,
+    battery:        batteryLevels[index] != null ? batteryLevels[index] : null,
+    lowBattery:     batteryLowFlag[index] || false,
+    online:         onlineStatus[index] !== false,
+    offlineRetryAt: onlineStatus[index] === false ? (offlineRetryAt[index] || null) : null,
   }));
+}
+
+async function retryCamera(index) {
+  const cam = cameras[index];
+  if (!cam) return false;
+  offlineRetryAt[index] = null; // clear backoff so doScheduledSnapshot proceeds immediately
+  await doScheduledSnapshot(cam, index);
+  return onlineStatus[index] !== false;
 }
 
 function getCameras() {
@@ -208,6 +276,10 @@ function getCameras() {
 
 function isCameraLowBattery(index) {
   return batteryLowFlag[index] || false;
+}
+
+function isCameraOnline(index) {
+  return onlineStatus[index] !== false;
 }
 
 function getCameraBattery(index) {
@@ -225,6 +297,14 @@ function hasRecentMotionClip(index) {
   return true;
 }
 
+function setOfflineRetryMs(ms) {
+  offlineRetryMs = ms;
+}
+
+function getOfflineRetryMs() {
+  return offlineRetryMs;
+}
+
 module.exports = {
   initRing,
   getRingSnapshot,
@@ -232,7 +312,11 @@ module.exports = {
   getCameraList,
   getCameras,
   isCameraLowBattery,
+  isCameraOnline,
   getCameraBattery,
   hasRecentMotionClip,
   takeSnapshot: doScheduledSnapshot,
+  retryCamera,
+  setOfflineRetryMs,
+  getOfflineRetryMs,
 };

@@ -75,6 +75,22 @@
             <button class="btn btn-primary btn-sm" id="save-interval-btn">Apply</button>
           </div>
         </div>
+        <div class="server-setting-row">
+          <label for="motion-clip-loops-input">Motion Clip Loops</label>
+          <div class="server-setting-controls">
+            <input type="number" id="motion-clip-loops-input" min="1" max="20" step="1" value="5">
+            <span class="server-setting-unit">times</span>
+            <button class="btn btn-primary btn-sm" id="save-loops-btn">Apply</button>
+          </div>
+        </div>
+        <div class="server-setting-row">
+          <label for="offline-retry-input">Camera Offline Retry</label>
+          <div class="server-setting-controls">
+            <input type="number" id="offline-retry-input" min="1" max="240" step="1" value="30">
+            <span class="server-setting-unit">min</span>
+            <button class="btn btn-primary btn-sm" id="save-offline-retry-btn">Apply</button>
+          </div>
+        </div>
       </div>
     </aside>
   </div>

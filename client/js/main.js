@@ -28,6 +28,8 @@
   var websocketFailureReported = false;
   var STALE_THRESHOLD_MS = 20 * 60 * 1000; // 20 min ≈ 2 missed 10-min snapshot intervals
   var LOW_BATTERY_THRESHOLD = 15;
+  var motionClipLoops = 5; // updated from server via WS payload
+  var clipPlayState = {}; // slotId → { url, playCount, exhausted }
 
   // ── Grid rendering ────────────────────────────────────
 
@@ -158,6 +160,28 @@
         var src = video.getAttribute('src');
         if (!src || src === '') return;
         reportClientError('camera', 'Live video failed to load', (slot.config && slot.config.name) || slot.id);
+        // Treat a load error as exhaustion so a broken clip doesn't block the snapshot
+        var state = clipPlayState[slot.id];
+        if (state && !state.exhausted && video.currentSrc === state.url) {
+          state.exhausted = true;
+          video.classList.remove('active');
+          var camData = cameraData[slot.id];
+          if (camData && camData.url) { img.style.display = ''; img.src = camData.url; img.classList.add('loaded'); }
+        }
+      });
+      video.addEventListener('ended', function () {
+        var state = clipPlayState[slot.id];
+        if (!state || state.exhausted) return;
+        if (video.currentSrc !== state.url) return; // stale event from a previous clip
+        state.playCount++;
+        if (state.playCount < motionClipLoops) {
+          video.play().catch(function () {});
+        } else {
+          state.exhausted = true;
+          video.classList.remove('active');
+          var camData = cameraData[slot.id];
+          if (camData && camData.url) { img.style.display = ''; img.src = camData.url; img.classList.add('loaded'); }
+        }
       });
 
       var label = el('div', 'camera-label');
@@ -842,6 +866,21 @@
         }
       }
 
+      // Resolve effective motion clip URL, accounting for per-camera play exhaustion
+      var effectiveMotionClipUrl = cam.motionClipUrl || null;
+      if (effectiveMotionClipUrl) {
+        var clipState = clipPlayState[slotId];
+        if (!clipState || clipState.url !== effectiveMotionClipUrl) {
+          // New clip URL (new motion event) — reset play counter
+          clipPlayState[slotId] = { url: effectiveMotionClipUrl, playCount: 0, exhausted: false };
+          clipState = clipPlayState[slotId];
+        }
+        if (clipState.exhausted) effectiveMotionClipUrl = null;
+      } else {
+        // Server cleared the clip (fresh snapshot arrived) — purge state so next event starts clean
+        if (clipPlayState[slotId]) delete clipPlayState[slotId];
+      }
+
       if (cam.streamUrl) {
         // ── Live stream mode: show the current frame from the HLS source ──
         card.classList.remove('camera-offline');
@@ -853,17 +892,17 @@
           vid.classList.add('active');
         }
 
-      } else if (cam.motionClipUrl) {
-        // ── Motion clip mode: loop the recording until next scheduled snapshot ──
+      } else if (effectiveMotionClipUrl) {
+        // ── Motion clip mode: play the recording N times, then fall back to snapshot ──
         card.classList.remove('camera-offline');
         if (img) { img.style.display = 'none'; img.classList.remove('loaded'); }
         if (vid) {
           // Compare against previous stored URL, not vid.src (which is always absolute).
           // detachHls first in case we are transitioning away from a live stream.
-          if (prev.motionClipUrl !== cam.motionClipUrl) {
+          if (prev.motionClipUrl !== effectiveMotionClipUrl) {
             detachHls(vid);
-            vid.src  = cam.motionClipUrl;
-            vid.loop = true;
+            vid.loop = false; // ended event drives replay counting
+            vid.src  = effectiveMotionClipUrl;
             vid.play().catch(function () {});
           }
           vid.classList.add('active');
@@ -1134,6 +1173,7 @@
         var data = JSON.parse(evt.data);
         if (data.type === 'layout') renderLayout(data.layout);
         if (data.type === 'update') {
+          if (data.motionClipLoops >= 1) motionClipLoops = data.motionClipLoops;
           try { if (data.temperature) updateTemperature(data.temperature); } catch (err) { reportClientError('temperature', err.message || 'Update failed'); }
           try { if (data.cameras) updateCameras(data.cameras); } catch (err) { reportClientError('cameras', err.message || 'Update failed'); }
           try { if (data.stocks) updateStocks(data.stocks); } catch (err) { reportClientError('stocks', err.message || 'Update failed'); }

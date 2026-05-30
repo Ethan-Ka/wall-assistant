@@ -74,7 +74,7 @@ console.info = (...args) => pushLog('log', args);
 console.warn = (...args) => pushLog('warn', args);
 console.error = (...args) => pushLog('error', args);
 
-const { initRing, getRingSnapshot, getMotionClipUrl, getCameraList, getCameras, isCameraLowBattery, getCameraBattery, hasRecentMotionClip, takeSnapshot } = require('./ring');
+const { initRing, getRingSnapshot, getMotionClipUrl, getCameraList, getCameras, isCameraLowBattery, isCameraOnline, getCameraBattery, hasRecentMotionClip, takeSnapshot, retryCamera, setOfflineRetryMs, getOfflineRetryMs } = require('./ring');
 const { initHls, startStream, stopStream, getHlsUrl, getHlsDir } = require('./hls');
 const { initEcobee } = require('./ecobee');
 const { getTemperature } = require('./temperature');
@@ -159,7 +159,11 @@ function getDisplayLines() {
       const dropped = camera.dropped ? `  |  ${camera.dropped} dropped` : '';
       const battStr = camera.battery != null ? `  |  ${camera.battery}% bat` : '';
       const lowBatStr = camera.lowBattery ? color('1;33', '  |  LOW BATTERY') : '';
-      lines.push(`camera ${color('1;36', String(camera.index))}: ${camera.name}  |  ${dimColor(camera.kind || 'unknown')}  |  ${streaming}${dropped}${battStr}${lowBatStr}`);
+      const onlineStr = camera.online ? '' : color('1;31', '  |  OFFLINE');
+      const retryStr = !camera.online && camera.offlineRetryAt
+        ? dimColor(`  |  retry in ${Math.max(0, Math.round((camera.offlineRetryAt - Date.now()) / 60000))}m`)
+        : '';
+      lines.push(`camera ${color('1;36', String(camera.index))}: ${camera.name}  |  ${dimColor(camera.kind || 'unknown')}  |  ${streaming}${dropped}${battStr}${lowBatStr}${onlineStr}${retryStr}`);
     });
   } else {
     lines.push('no Ring cameras detected yet');
@@ -279,7 +283,9 @@ try {
   serverSettings = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
 } catch (_) {}
 
-let updateIntervalMs = (serverSettings.updateIntervalMs >= 1000) ? serverSettings.updateIntervalMs : 3000;
+let updateIntervalMs = (serverSettings.updateIntervalMs >= 1000)   ? serverSettings.updateIntervalMs : 3000;
+let motionClipLoops  = (serverSettings.motionClipLoops  >= 1)      ? serverSettings.motionClipLoops  : 5;
+if (serverSettings.offlineRetryMs >= 60000) setOfflineRetryMs(serverSettings.offlineRetryMs);
 let broadcastIntervalId = null;
 
 let currentLayout = readLayout();
@@ -332,6 +338,16 @@ app.get('/api/cameras', (_req, res) => {
   res.json(getCameraList());
 });
 
+app.post('/api/cameras/:index/retry', async (req, res) => {
+  const index = parseInt(req.params.index, 10);
+  const camList = getCameras();
+  if (isNaN(index) || index < 0 || index >= camList.length) {
+    return res.status(404).json({ error: 'Camera not found' });
+  }
+  const online = await retryCamera(index);
+  res.json({ ok: true, online });
+});
+
 app.get('/api/health', (_req, res) => {
   res.json({
     status: 'ok',
@@ -346,11 +362,11 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.get('/api/config', (_req, res) => {
-  res.json({ updateIntervalMs });
+  res.json({ updateIntervalMs, motionClipLoops, offlineRetryMs: getOfflineRetryMs() });
 });
 
 app.post('/api/config', (req, res) => {
-  const { updateIntervalMs: newInterval } = req.body;
+  const { updateIntervalMs: newInterval, motionClipLoops: newLoops, offlineRetryMs: newOfflineRetry } = req.body;
   if (newInterval != null) {
     const ms = parseInt(newInterval, 10);
     if (isNaN(ms) || ms < 1000 || ms > 60000) {
@@ -358,15 +374,33 @@ app.post('/api/config', (req, res) => {
     }
     updateIntervalMs = ms;
     serverSettings.updateIntervalMs = ms;
+    startBroadcastInterval();
+    scheduleRender();
+  }
+  if (newLoops != null) {
+    const loops = parseInt(newLoops, 10);
+    if (isNaN(loops) || loops < 1 || loops > 20) {
+      return res.status(400).json({ error: 'motionClipLoops must be between 1 and 20' });
+    }
+    motionClipLoops = loops;
+    serverSettings.motionClipLoops = loops;
+  }
+  if (newOfflineRetry != null) {
+    const ms = parseInt(newOfflineRetry, 10);
+    if (isNaN(ms) || ms < 60000 || ms > 14400000) {
+      return res.status(400).json({ error: 'offlineRetryMs must be between 60000 (1 min) and 14400000 (4 hrs)' });
+    }
+    setOfflineRetryMs(ms);
+    serverSettings.offlineRetryMs = ms;
+  }
+  if (newInterval != null || newLoops != null || newOfflineRetry != null) {
     try {
       fs.writeFileSync(SETTINGS_PATH, JSON.stringify(serverSettings, null, 2) + '\n', 'utf8');
     } catch (e) {
       console.error('[config] Failed to persist settings:', e.message);
     }
-    startBroadcastInterval();
-    scheduleRender();
   }
-  res.json({ ok: true, updateIntervalMs });
+  res.json({ ok: true, updateIntervalMs, motionClipLoops, offlineRetryMs: getOfflineRetryMs() });
 });
 
 app.get('/api/spotify', async (_req, res) => {
@@ -499,6 +533,7 @@ async function buildPayload() {
         motionClipUrl: motionClipUrl || null,
         battery:       getCameraBattery(camIndex),
         lowBattery:    isCameraLowBattery(camIndex),
+        online:        isCameraOnline(camIndex),
       };
     })
   );
@@ -558,7 +593,7 @@ async function buildPayload() {
   const hasNowPlaying = currentLayout.slots.some((s) => s.type === 'nowplaying');
   const spotify = hasNowPlaying ? await getNowPlaying() : undefined;
 
-  return JSON.stringify({ type: 'update', temperature, cameras, stocks, headlines, iss, sports, nowplaying: spotify, spotify });
+  return JSON.stringify({ type: 'update', temperature, cameras, stocks, headlines, iss, sports, nowplaying: spotify, spotify, motionClipLoops });
 }
 
 wss.on('connection', (ws, req) => {

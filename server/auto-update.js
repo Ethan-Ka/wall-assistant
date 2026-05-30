@@ -11,31 +11,54 @@ const IS_WIN = process.platform === 'win32';
 const GIT = 'git';
 const NPM = 'npm';
 
+const GIT_TIMEOUT_MS = 60_000;
+
 function git(...args) {
   return execFileSync(GIT, ['-c', 'safe.directory=*', ...args], {
     cwd: ROOT,
     encoding: 'utf8',
+    timeout: GIT_TIMEOUT_MS,
   }).trim();
 }
 
+function ensureRemote() {
+  let currentUrl = '';
+  try {
+    currentUrl = git('remote', 'get-url', 'origin');
+  } catch {
+    // origin doesn't exist
+  }
+  if (currentUrl === REMOTE_URL) return;
+  if (currentUrl) {
+    git('remote', 'set-url', 'origin', REMOTE_URL);
+    console.log('[auto-update] updated origin URL to', REMOTE_URL);
+  } else {
+    git('remote', 'add', 'origin', REMOTE_URL);
+    console.log('[auto-update] added origin remote:', REMOTE_URL);
+  }
+}
+
 function ensureGitRepo() {
+  let isRepo = false;
   try {
     git('rev-parse', '--git-dir');
-    return; // already a repo
+    isRepo = true;
   } catch {
-    // not a repo — initialize and wire up the remote
+    // not a repo — initialize it
   }
 
-  console.log('[auto-update] initializing git repo and fetching remote...');
-  git('init');
-  try {
-    git('remote', 'add', 'origin', REMOTE_URL);
-  } catch {
-    git('remote', 'set-url', 'origin', REMOTE_URL);
+  if (!isRepo) {
+    console.log('[auto-update] initializing git repo...');
+    git('init');
   }
-  git('fetch', 'origin', BRANCH, '--quiet');
-  git('checkout', '-B', BRANCH, `origin/${BRANCH}`);
-  console.log('[auto-update] repo initialized from remote');
+
+  ensureRemote();
+
+  if (!isRepo) {
+    git('fetch', 'origin', BRANCH, '--quiet');
+    git('checkout', '-B', BRANCH, `origin/${BRANCH}`);
+    console.log('[auto-update] repo initialized from remote');
+  }
 }
 
 function currentCommit() {

@@ -759,6 +759,10 @@
       .then(function (cfg) {
         var input = document.getElementById('update-interval-input');
         if (input && cfg.updateIntervalMs) input.value = cfg.updateIntervalMs;
+        var loopsInput = document.getElementById('motion-clip-loops-input');
+        if (loopsInput && cfg.motionClipLoops) loopsInput.value = cfg.motionClipLoops;
+        var retryInput = document.getElementById('offline-retry-input');
+        if (retryInput && cfg.offlineRetryMs) retryInput.value = Math.round(cfg.offlineRetryMs / 60000);
       })
       .catch(function () {});
   }
@@ -778,6 +782,40 @@
       .then(function (r) { return r.json(); })
       .then(function () { showNotification('Update interval applied', 'success'); })
       .catch(function () { showNotification('Failed to apply interval', 'error'); });
+  });
+
+  document.getElementById('save-loops-btn').addEventListener('click', function () {
+    var input = document.getElementById('motion-clip-loops-input');
+    var loops = parseInt(input && input.value, 10);
+    if (isNaN(loops) || loops < 1 || loops > 20) {
+      showNotification('Loops must be 1–20', 'error');
+      return;
+    }
+    fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ motionClipLoops: loops }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function () { showNotification('Motion clip loops applied', 'success'); })
+      .catch(function () { showNotification('Failed to apply loops setting', 'error'); });
+  });
+
+  document.getElementById('save-offline-retry-btn').addEventListener('click', function () {
+    var input = document.getElementById('offline-retry-input');
+    var minutes = parseInt(input && input.value, 10);
+    if (isNaN(minutes) || minutes < 1 || minutes > 240) {
+      showNotification('Retry interval must be 1–240 min', 'error');
+      return;
+    }
+    fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ offlineRetryMs: minutes * 60000 }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function () { showNotification('Offline retry interval applied', 'success'); })
+      .catch(function () { showNotification('Failed to apply retry interval', 'error'); });
   });
 
   loadCameras();
